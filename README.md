@@ -33,3 +33,28 @@ Manually monitoring and troubleshooting Kubernetes clusters is time-consuming an
 ## Architecture
 
 <img src="Assets/k8s_health_healer_architecture.png" alt="Project Architecture Image" width="100%" height="100%">
+
+
+## Kubernetes Cluster (Nodes & Pods)
+
+The environment being monitored by the system. Nodes represent the machines running the cluster and report health conditions such as readiness and resource pressure, while Pods represent the workloads scheduled on them and report status such as running, pending, or failed. This layer is the foundation the entire architecture is built around.
+
+## Health Checker (Go + Python, Docker)
+
+The core application of the project, responsible for watching cluster state and triggering self-healing actions when issues are detected. Go handles direct interaction with the Kubernetes API for performance, while Python supports auxiliary scripting, and Docker packages it for deployment. It connects directly to the cluster via the Kubernetes API and is the only component that actively modifies cluster state.
+
+## Prometheus
+
+The metrics collection layer that scrapes health and resource data from the cluster and the Health Checker at regular intervals, storing it as time-series data. It sits at the center of the observability stack, feeding data to both the visualization and alerting components.
+
+## Grafana
+
+The visualization layer that queries Prometheus to render real-time and historical dashboards of cluster health and auto-healing activity. It connects only to Prometheus and provides the primary interface for reviewing system status.
+
+## Alertmanager
+
+The alert routing layer that evaluates rules against Prometheus data and manages deduplication, grouping, and routing of alerts. It receives triggered alerts from Prometheus and forwards them to the appropriate notification channel based on severity.
+
+## Slack
+
+The notification endpoint that delivers alerts routed through Alertmanager. It connects to the end of the pipeline, surfacing critical issues that may require manual attention.
