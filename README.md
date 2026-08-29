@@ -1,5 +1,5 @@
 # Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System
-Capstone Project by Hero Vired  - Authors : hitesh-1984-pardeshi &amp; rajkumaramithn
+Capstone Project by Hero Vired  - Authors : rajkumaramithn &amp; hitesh-1984-pardeshi
 
 
 # Kubernetes Cluster Health Checker and Auto-Healing
@@ -32,7 +32,7 @@ Manually monitoring and troubleshooting Kubernetes clusters is time-consuming an
 
 ## Architecture
 
-<img src="assets/tech_architecture.png" alt="Project Architecture Image" width="100%" height="100%">
+<img src="assets/tech_architecture.png" alt="Project Architectural Image" width="100%" height="100%">
 
 
 ## Kubernetes Cluster (Nodes & Pods)
