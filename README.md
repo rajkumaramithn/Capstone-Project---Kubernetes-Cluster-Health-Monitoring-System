@@ -82,24 +82,24 @@ go get github.com/gin-gonic/gin
 <b>File Structure Responsibilities</b>
 
 📁 cmd/healer/main.go
-<i>Entry point (starts everything)</i>
+</br><i>Entry point (starts everything)</i>
 
 📁 internal/k8sclient
-<i>Talks to Kubernetes (list pods, get status)</i>
+</br><i>Talks to Kubernetes (list pods, get status)</i>
 
 📁 internal/monitor
-<i>Checks health rules (CrashLoopBackOff detection)</i>
+</br><i>Checks health rules (CrashLoopBackOff detection)</i>
 
 📁 internal/alerts
-<i>Prints/logs alerts</i>
+</br><i>Prints/logs alerts</i>
 
 📁 internal/healer
-<i>auto-fix logic</i>
+</br><i>auto-fix logic</i>
 
 
 ## Step 2 - Creating and Setting up the Go Files 
 
-<b>Create MAIN ENTRY (cmd/healer/main.go)</b>
+</br><b>Create MAIN ENTRY (cmd/healer/main.go)</b>
 
 Refer to: cmd\healer\main.go
 
@@ -107,7 +107,7 @@ Starts a Kubernetes health monitoring loop that continuously fetches pods from t
 It connects to the cluster using k8sclient, then passes pod data to monitor.CheckPods() for health evaluation and detection of issues.
 
 
-<b>Kubernetes Client (internal/k8sclient)</b>
+</br><b>Kubernetes Client (internal/k8sclient)</b>
 
 Refer to: internal\k8sclient\client.go
 
@@ -115,7 +115,7 @@ Creates a Kubernetes client in Go that connects either to a local kubeconfig (Mi
 GetPods() uses the Kubernetes API to list pods and returns them so your monitor can check their health status.
 
 
-<b>Monitor Logic</b>
+</br><b>Monitor Logic</b>
 
 Refer to: internal\monitor\monitor.go
 
@@ -125,7 +125,7 @@ Loops through all Kubernetes pods and checks each container’s status to detect
 If a problem is found, it prints an alert indicating that the pod is unhealthy (basic health monitoring logic).
 
 
-<b>Alerts Module (simple for Sprint 1)</b>
+</br><b>Alerts Module (simple for Sprint 1)</b>
 
 Refer to: internal\alerts\alerts.go
 
