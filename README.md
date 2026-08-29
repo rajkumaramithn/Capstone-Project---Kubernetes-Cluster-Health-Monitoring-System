@@ -32,4 +32,4 @@ Manually monitoring and troubleshooting Kubernetes clusters is time-consuming an
 
 ## Architecture
 
-<img src="Assets/k8s_health_healer_architecture.png" alt="Project Architecture Image" width="500">
+<img src="Assets/k8s_health_healer_architecture.png" alt="Project Architecture Image" width="100%" height="100%">
