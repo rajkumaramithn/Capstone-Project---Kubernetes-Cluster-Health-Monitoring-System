@@ -58,3 +58,12 @@ The alert routing layer that evaluates rules against Prometheus data and manages
 ## Slack
 
 The notification endpoint that delivers alerts routed through Alertmanager. It connects to the end of the pipeline, surfacing critical issues that may require manual attention.
+
+
+## Project Execution
+
+## Sprint 1 - Project Setup and Kubernetes Cluster Access
+
+Project File Structure Definition 
+
+<img src="assets/folder_architecture.png" alt="Project Architectural Image" width="100%" height="100%">
