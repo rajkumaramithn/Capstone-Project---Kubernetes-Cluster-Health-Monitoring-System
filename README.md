@@ -66,4 +66,106 @@ The notification endpoint that delivers alerts routed through Alertmanager. It c
 
 Project File Structure Definition 
 
-<img src="assets/folder_architecture.png" alt="Project Architectural Image" width="100%" height="100%">
+<img src="assets/folder_architecture.png" alt="Project Folder Architecture Image" width="100%" height="100%">
+
+## Step 1 - Initializing the Go Project
+
+<b>On the Command Line Terminal Run :</b>
+
+go mod init Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System
+go get k8s.io/client-go@latest
+go get k8s.io/apimachinery@latest
+go get k8s.io/api@latest
+go get github.com/gin-gonic/gin
+
+
+<b>File Structure Responsibilities</b>
+
+📁 cmd/healer/main.go
+<i>Entry point (starts everything)</i>
+
+📁 internal/k8sclient
+<i>Talks to Kubernetes (list pods, get status)</i>
+
+📁 internal/monitor
+<i>Checks health rules (CrashLoopBackOff detection)</i>
+
+📁 internal/alerts
+<i>Prints/logs alerts</i>
+
+📁 internal/healer
+<i>auto-fix logic</i>
+
+
+## Step 2 - Creating and Setting up the Go Files 
+
+<b>Create MAIN ENTRY (cmd/healer/main.go)</b>
+
+Refer to: cmd\healer\main.go
+
+Starts a Kubernetes health monitoring loop that continuously fetches pods from the “default” namespace and checks their status every 10 seconds.
+It connects to the cluster using k8sclient, then passes pod data to monitor.CheckPods() for health evaluation and detection of issues.
+
+
+<b>Kubernetes Client (internal/k8sclient)</b>
+
+Refer to: internal\k8sclient\client.go
+
+Creates a Kubernetes client in Go that connects either to a local kubeconfig (Minikube) or in-cluster config, then fetches all pods from a given namespace.
+GetPods() uses the Kubernetes API to list pods and returns them so your monitor can check their health status.
+
+
+<b>Monitor Logic</b>
+
+Refer to: internal\monitor\monitor.go
+
+This code:
+
+Loops through all Kubernetes pods and checks each container’s status to detect unhealthy conditions like high restart count or waiting state.
+If a problem is found, it prints an alert indicating that the pod is unhealthy (basic health monitoring logic).
+
+
+<b>Alerts Module (simple for Sprint 1)</b>
+
+Refer to: internal\alerts\alerts.go
+
+Creates an alerts package with a function that prints an alert message to the console.
+SendAlert() is used to simulate sending notifications when a problem is detected in the Kubernetes cluster.
+
+
+## Step 3 - Creating the RBAC YAML file for Kubernetes Access
+
+Refer to: deploy\manifests\rbac.yaml
+
+
+It creates a ServiceAccount + RBAC rules so your app can list and watch pods in the cluster.
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: health-monitor-role
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: health-monitor-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: health-monitor-role
+subjects:
+- kind: ServiceAccount
+  name: health-monitor-sa
+  namespace: default
+
+
+
+<b></b>
+<b></b>
+<b></b>
+<b></b>

@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 type Client struct {
@@ -17,7 +18,12 @@ type Client struct {
 func NewClient() *Client {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err.Error())
+		// Not running inside a cluster — fall back to local kubeconfig
+		kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
