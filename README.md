@@ -66,7 +66,7 @@ The notification endpoint that delivers alerts routed through Alertmanager. It c
 
 Project File Structure Definition 
 
-<img src="assets/folder_architecture.png" alt="Project Folder Architecture Image" width="100%" height="100%">
+<img src="assets/folder_structure.png" alt="Project Folder Architecture Image" width="100%" height="100%">
 
 ## Step 1 - Initializing the Go Project
 
