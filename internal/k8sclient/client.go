@@ -43,3 +43,51 @@ func (c *Client) GetPods(namespace string) []v1.Pod {
 
 	return pods.Items
 }
+func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (bool, error) {
+	// Re-read the pod to avoid acting on stale information.
+	current, err := c.set.CoreV1().Pods(pod.Namespace).Get(
+		ctx,
+		pod.Name,
+		metav1.GetOptions{},
+	)
+	if err != nil {
+		return false, err
+	}
+
+	// Confirm that this is still the same pod.
+	if current.UID != pod.UID {
+		return false, nil
+	}
+
+	// Only heal pods that Kubernetes has marked Failed.
+	if current.Status.Phase != v1.PodFailed {
+		return false, nil
+	}
+
+	// Never delete a standalone pod.
+	controllerManaged := false
+	for _, owner := range current.OwnerReferences {
+		if owner.Controller != nil && *owner.Controller {
+			controllerManaged = true
+			break
+		}
+	}
+	if !controllerManaged {
+		return false, nil
+	}
+
+	// Use a UID precondition to avoid deleting a replacement pod.
+	uid := current.UID
+	err = c.set.CoreV1().Pods(current.Namespace).Delete(
+		ctx,
+		current.Name,
+		metav1.DeleteOptions{
+			Preconditions: &metav1.Preconditions{UID: &uid},
+		},
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
