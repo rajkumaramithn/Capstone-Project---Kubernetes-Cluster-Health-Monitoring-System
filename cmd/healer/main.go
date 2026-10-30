@@ -50,9 +50,12 @@ func main() {
 
 	for {
 		pods := client.GetPods("default")
+		nodes := client.GetNodes()
 
 		monitor.CheckPods(pods)
+		monitor.CheckNodes(nodes)
 		monitor.UpdateMetrics(pods)
+		monitor.UpdateNodeMetrics(nodes)
 		healer.HealFailedPods(client, pods)
 
 		select {

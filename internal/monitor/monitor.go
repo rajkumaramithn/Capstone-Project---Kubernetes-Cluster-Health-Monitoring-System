@@ -3,9 +3,8 @@ package monitor
 import (
 	"fmt"
 
-	v1 "k8s.io/api/core/v1"
-
 	"Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System/internal/alerts"
+	v1 "k8s.io/api/core/v1"
 )
 
 // CheckPods checks pod and container health and reports unhealthy states.
@@ -43,6 +42,32 @@ func CheckPods(pods []v1.Pod) {
 					pod.Name,
 					waiting.Reason,
 				))
+			}
+		}
+	}
+}
+
+// CheckNodes checks node readiness and resource-pressure conditions.
+func CheckNodes(nodes []v1.Node) {
+	for _, node := range nodes {
+		for _, condition := range node.Status.Conditions {
+			switch condition.Type {
+			case v1.NodeReady:
+				if condition.Status != v1.ConditionTrue {
+					alerts.SendAlert(fmt.Sprintf(
+						"Node %s is not ready: %s",
+						node.Name,
+						condition.Message,
+					))
+				}
+			case v1.NodeMemoryPressure, v1.NodeDiskPressure, v1.NodePIDPressure:
+				if condition.Status == v1.ConditionTrue {
+					alerts.SendAlert(fmt.Sprintf(
+						"Node %s has resource pressure: %s",
+						node.Name,
+						condition.Type,
+					))
+				}
 			}
 		}
 	}

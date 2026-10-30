@@ -43,6 +43,18 @@ func (c *Client) GetPods(namespace string) []v1.Pod {
 
 	return pods.Items
 }
+func (c *Client) GetNodes() []v1.Node {
+	nodes, err := c.set.CoreV1().Nodes().List(
+		context.Background(),
+		metav1.ListOptions{},
+	)
+	if err != nil {
+		fmt.Println("Error fetching nodes:", err)
+		return nil
+	}
+
+	return nodes.Items
+}
 func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (bool, error) {
 	// Re-read the pod to avoid acting on stale information.
 	current, err := c.set.CoreV1().Pods(pod.Namespace).Get(
