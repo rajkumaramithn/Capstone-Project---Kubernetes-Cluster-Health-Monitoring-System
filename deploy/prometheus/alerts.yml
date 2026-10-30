@@ -1,0 +1,29 @@
+groups:
+  - name: kubernetes-health-monitor
+    rules:
+      - alert: UnhealthyPodsDetected
+        expr: kubernetes_health_monitor_unhealthy_pods > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Unhealthy Kubernetes pods detected
+          description: "The health monitor reports {{ $value }} unhealthy pod(s)."
+
+      - alert: KubernetesNodeNotReady
+        expr: kubernetes_health_monitor_nodes{status!="Ready"} > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Kubernetes node is not ready
+          description: "Node {{ $labels.node }} has readiness status {{ $labels.status }}."
+
+      - alert: KubernetesNodeResourcePressure
+        expr: kubernetes_health_monitor_node_pressure == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Kubernetes node resource pressure detected
+          description: "Node {{ $labels.node }} reports {{ $labels.condition }}."
