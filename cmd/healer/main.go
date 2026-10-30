@@ -51,9 +51,9 @@ func main() {
 	for {
 		pods := client.GetPods("default")
 
-        monitor.CheckPods(pods)
-        monitor.UpdateMetrics(pods)
-        healer.HealFailedPods(client, pods)
+		monitor.CheckPods(pods)
+		monitor.UpdateMetrics(pods)
+		healer.HealFailedPods(client, pods)
 
 		select {
 		case <-ctx.Done():
