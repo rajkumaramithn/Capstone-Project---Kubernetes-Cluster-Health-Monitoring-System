@@ -84,3 +84,47 @@ func TestDeleteFailedControllerPod(t *testing.T) {
 		})
 	}
 }
+func TestDeleteFailedControllerPodSkipsStaleUID(t *testing.T) {
+	controller := true
+
+	originalPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "failed-pod",
+			Namespace: "default",
+			UID:       "old-uid",
+		},
+		Status: v1.PodStatus{Phase: v1.PodFailed},
+	}
+
+	replacementPod := originalPod.DeepCopy()
+	replacementPod.UID = "new-uid"
+	replacementPod.OwnerReferences = []metav1.OwnerReference{
+		{
+			APIVersion: "apps/v1",
+			Kind:       "ReplicaSet",
+			Name:       "test-rs",
+			Controller: &controller,
+		},
+	}
+
+	clientset := fake.NewSimpleClientset(replacementPod)
+	client := &Client{set: clientset}
+
+	deleted, err := client.DeleteFailedControllerPod(
+		context.Background(),
+		*originalPod,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected stale pod UID to be skipped")
+	}
+
+	for _, action := range clientset.Actions() {
+		if action.GetVerb() == "delete" &&
+			action.GetResource().Resource == "pods" {
+			t.Fatal("replacement pod must not be deleted")
+		}
+	}
+}
