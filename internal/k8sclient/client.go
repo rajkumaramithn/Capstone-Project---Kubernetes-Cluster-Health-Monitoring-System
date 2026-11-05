@@ -9,16 +9,19 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 type Client struct {
-	set kubernetes.Interface
+	set           kubernetes.Interface
+	metricsClient metricsclient.Interface
 }
 
 func NewClient() *Client {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		// Not running inside a cluster — fall back to local kubeconfig
+		// Not running inside a cluster — fall back to local kubeconfig.
 		kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().GetDefaultFilename()
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
@@ -31,11 +34,23 @@ func NewClient() *Client {
 		panic(err.Error())
 	}
 
-	return &Client{set: clientset}
+	metricsClient, err := metricsclient.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	return &Client{
+		set:           clientset,
+		metricsClient: metricsClient,
+	}
 }
 
+// GetPods retrieves pods from the specified namespace.
 func (c *Client) GetPods(namespace string) []v1.Pod {
-	pods, err := c.set.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
+	pods, err := c.set.CoreV1().Pods(namespace).List(
+		context.Background(),
+		metav1.ListOptions{},
+	)
 	if err != nil {
 		fmt.Println("Error fetching pods:", err)
 		return nil
@@ -43,6 +58,8 @@ func (c *Client) GetPods(namespace string) []v1.Pod {
 
 	return pods.Items
 }
+
+// GetNodes retrieves Kubernetes nodes.
 func (c *Client) GetNodes() []v1.Node {
 	nodes, err := c.set.CoreV1().Nodes().List(
 		context.Background(),
@@ -55,6 +72,42 @@ func (c *Client) GetNodes() []v1.Node {
 
 	return nodes.Items
 }
+
+// GetNodeMetrics retrieves and prints node CPU and memory usage.
+func (c *Client) GetNodeMetrics() {
+	nodeMetrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().List(
+		context.Background(),
+		metav1.ListOptions{},
+	)
+	if err != nil {
+		fmt.Println("Error fetching node metrics:", err)
+		return
+	}
+
+	for _, node := range nodeMetrics.Items {
+		fmt.Printf(
+			"Node: %s | CPU: %s | Memory: %s\n",
+			node.Name,
+			node.Usage.Cpu().String(),
+			node.Usage.Memory().String(),
+		)
+	}
+}
+
+// GetNodeMetricsData retrieves node metrics for utilization calculations.
+func (c *Client) GetNodeMetricsData() ([]metricsv1beta1.NodeMetrics, error) {
+	metrics, err := c.metricsClient.MetricsV1beta1().NodeMetricses().List(
+		context.Background(),
+		metav1.ListOptions{},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return metrics.Items, nil
+}
+
+// DeleteFailedControllerPod safely deletes a failed controller-managed pod.
 func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (bool, error) {
 	// Re-read the pod to avoid acting on stale information.
 	current, err := c.set.CoreV1().Pods(pod.Namespace).Get(
@@ -66,13 +119,8 @@ func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (boo
 		return false, err
 	}
 
-	// Confirm that this is still the same pod.
-	if current.UID != pod.UID {
-		return false, nil
-	}
-
-	// Only heal pods that Kubernetes has marked Failed.
-	if current.Status.Phase != v1.PodFailed {
+	// Confirm that this is still the same pod and is still failed.
+	if current.UID != pod.UID || current.Status.Phase != v1.PodFailed {
 		return false, nil
 	}
 
@@ -84,6 +132,7 @@ func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (boo
 			break
 		}
 	}
+
 	if !controllerManaged {
 		return false, nil
 	}

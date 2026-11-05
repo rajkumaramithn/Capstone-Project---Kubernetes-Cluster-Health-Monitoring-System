@@ -36,7 +36,7 @@ func main() {
 		}
 	}()
 
-	// Allow a graceful shutdown when the process receives a termination signal.
+	// Allow graceful shutdown.
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -49,28 +49,46 @@ func main() {
 	defer ticker.Stop()
 
 	for {
+		// Retrieve Kubernetes pods and nodes.
 		pods := client.GetPods("default")
 		nodes := client.GetNodes()
 
+		// Retrieve node CPU and memory usage.
+		nodeMetrics, err := client.GetNodeMetricsData()
+		if err != nil {
+			log.Printf("Error fetching node metrics: %v", err)
+		} else {
+			// Calculate resource utilization and update Prometheus metrics.
+			monitor.UpdateNodeResourceMetrics(nodes, nodeMetrics)
+		}
+
+		// Run existing health monitoring.
 		monitor.CheckPods(pods)
 		monitor.CheckNodes(nodes)
+
+		// Update Prometheus monitoring metrics.
 		monitor.UpdateMetrics(pods)
 		monitor.UpdateNodeMetrics(nodes)
+
+		// Run existing pod self-healing mechanism.
 		healer.HealFailedPods(client, pods)
 
 		select {
 		case <-ctx.Done():
 			log.Println("Shutting down Kubernetes Health Monitor...")
+
 			shutdownCtx, cancel := context.WithTimeout(
 				context.Background(),
 				5*time.Second,
 			)
-			defer cancel()
 
 			if err := server.Shutdown(shutdownCtx); err != nil {
 				log.Printf("Metrics server shutdown error: %v", err)
 			}
+
+			cancel()
 			return
+
 		case <-ticker.C:
 		}
 	}
