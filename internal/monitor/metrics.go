@@ -46,6 +46,13 @@ var (
 		},
 		[]string{"namespace", "pod", "container"},
 	)
+	podsWithExcessiveRestarts = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_pods_with_excessive_restarts",
+			Help: "Pods with containers exceeding the restart threshold.",
+		},
+		[]string{"namespace", "pod"},
+	)
 	unhealthyPods = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_unhealthy_pods",
@@ -78,13 +85,16 @@ func init() {
 		nodeCPUUsage,
 		nodeMemoryUsage,
 		nodeScalingRecommendation,
+		podsWithExcessiveRestarts,
 	)
 }
 
 // UpdateMetrics refreshes metrics using the latest pod information.
+// UpdateMetrics refreshes metrics using the latest pod information.
 func UpdateMetrics(pods []v1.Pod) {
 	podCount.Reset()
 	containerRestarts.Reset()
+	podsWithExcessiveRestarts.Reset()
 
 	unhealthy := 0
 
@@ -99,6 +109,8 @@ func UpdateMetrics(pods []v1.Pod) {
 		isUnhealthy := pod.Status.Phase == v1.PodFailed ||
 			pod.Status.Phase == v1.PodUnknown
 
+		hasExcessiveRestarts := false
+
 		for _, container := range pod.Status.ContainerStatuses {
 			containerRestarts.WithLabelValues(
 				pod.Namespace,
@@ -106,9 +118,19 @@ func UpdateMetrics(pods []v1.Pod) {
 				container.Name,
 			).Set(float64(container.RestartCount))
 
-			if container.RestartCount > 3 || container.State.Waiting != nil {
+			if container.RestartCount > 3 {
+				hasExcessiveRestarts = true
+			}
+
+			if container.State.Waiting != nil {
 				isUnhealthy = true
 			}
+		}
+
+		if hasExcessiveRestarts {
+			podsWithExcessiveRestarts.
+				WithLabelValues(pod.Namespace, pod.Name).
+				Set(1)
 		}
 
 		if isUnhealthy {

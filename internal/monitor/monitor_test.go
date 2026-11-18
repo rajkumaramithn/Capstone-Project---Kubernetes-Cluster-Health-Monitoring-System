@@ -197,3 +197,44 @@ func TestUpdateNodeMetricsForUnhealthyNode(t *testing.T) {
 		t.Errorf("Memory pressure metric = %v, want 1", got)
 	}
 }
+
+func TestUpdateMetricsSeparatesRestartsFromUnhealthyPods(t *testing.T) {
+	pods := []v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "grafana",
+				Namespace: "default",
+			},
+			Status: v1.PodStatus{
+				Phase: v1.PodRunning,
+				ContainerStatuses: []v1.ContainerStatus{
+					{
+						Name:         "grafana",
+						RestartCount: 5,
+						State: v1.ContainerState{
+							Running: &v1.ContainerStateRunning{},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	UpdateMetrics(pods)
+
+	if got := testutil.ToFloat64(unhealthyPods); got != 0 {
+		t.Errorf("Unhealthy pods = %v, want 0", got)
+	}
+
+	if got := testutil.ToFloat64(
+		podsWithExcessiveRestarts.WithLabelValues("default", "grafana"),
+	); got != 1 {
+		t.Errorf("Excessive restart metric = %v, want 1", got)
+	}
+
+	if got := testutil.ToFloat64(
+		containerRestarts.WithLabelValues("default", "grafana", "grafana"),
+	); got != 5 {
+		t.Errorf("Container restart metric = %v, want 5", got)
+	}
+}
