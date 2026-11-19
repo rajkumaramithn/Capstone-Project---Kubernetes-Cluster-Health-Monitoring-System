@@ -1,5 +1,5 @@
 # Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System
-Capstone Project by Hero Vired  - Authors : rajkumaramithn , dhruvkapoor604-collab &amp; hitesh-1984-pardeshi
+Capstone Project by Hero Vired  - Authors : rajkumaramithn , hitesh-1984-pardeshi &amp; dhruvkapoor604-collab
 
 
 # Kubernetes Cluster Health Checker and Auto-Healing
