@@ -163,6 +163,7 @@ subjects:
   name: health-monitor-sa
   namespace: default
 
+---
 
 ## Sprint 2 - Health Monitoring Module (Node & Pod Checks)
 
@@ -180,6 +181,8 @@ In Sprint 2 the basic pod loop from Sprint 1 becomes a real health monitoring mo
 
 📁 deploy/manifests and deploy/prometheus </br><i>Run the monitor, Prometheus and Grafana inside the cluster</i>
 
+---
+
 ## Step 1 - Enabling the Metrics API on Minikube
 
 Node CPU and memory usage are read from the Kubernetes Metrics API, which is provided by the metrics-server addon.
@@ -193,7 +196,11 @@ kubectl top nodes
 
 kubectl top nodes can take a minute or two to return values after the addon is enabled.
 
-<!-- 📸 ATTACH SCREENSHOT: 02-cluster-ready.png (kubectl get nodes and kubectl top nodes) --> <img src="docs/evidence/sprint2/02-cluster-ready.png" alt="Cluster ready and kubectl top nodes output" width="100%" height="100%">
+<img src="assets/Sprint2/Sprint2_Kube_Cluster_Ready_1.png" alt="Cluster ready and kubectl top nodes output" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Kube_Cluster_Ready_2.png" alt="Cluster ready and kubectl top nodes output" width="100%" height="100%">
+
+---
 
 ## Step 2 - Updating the Kubernetes Client and Adding Node Usage
 
@@ -225,7 +232,10 @@ func (c *Client) GetNodeMetricsData() ([]metricsv1beta1.NodeMetrics, error) {
 The new dependency (k8s.io/metrics) is added to go.mod by running:
 
 go mod tidy
-Step 3 - Extending the Monitor Logic
+
+---
+
+## Step 3 - Extending the Monitor Logic
 
 </br><b>Monitor Logic</b>
 
@@ -254,6 +264,7 @@ func CheckNodes(nodes []v1.Node) {
 	}
 }
 
+---
 
 ## Step 4 - Exposing Prometheus Metrics
 
@@ -284,7 +295,10 @@ memoryPercent = float64(nodeMetric.Usage.Memory().Value()) /
 
 The function also prints a WARNING when a node reaches 70% utilization and a SCALE RECOMMENDATION at 85%.
 
-Step 5 - Updating the Main Entry
+
+---
+
+## Step 5 - Updating the Main Entry
 
 </br><b>Create MAIN ENTRY (cmd/healer/main.go)</b>
 
@@ -314,7 +328,10 @@ for {
 
 Automated pod recovery is not part of this sprint, so the loop does not call the healer package yet. It is added in Sprint 3.
 
-Step 6 - Building and Testing the Code
+
+---
+
+## Step 6 - Building and Testing the Code
 
 <b>On the Command Line Terminal Run :</b>
 
@@ -324,8 +341,11 @@ go test ./...
 
 All packages build without errors and the tests pass.
 
-<!-- 📸 ATTACH SCREENSHOT: 01-go-test-pass.png (go test ./... output) --> <img src="docs/evidence/sprint2/01-go-test-pass.png" alt="Go tests passing" width="100%" height="100%">
-Step 7 - Updating the RBAC YAML file
+<img src="assets/Sprint2/Sprint2_The_Go_Test.png" alt="Go tests passing" width="100%" height="100%">
+
+---
+
+## Step 7 - Updating the RBAC YAML file
 
 Refer to: deploy\manifests\rbac.yaml
 
@@ -350,8 +370,10 @@ kubectl auth can-i list nodes --as=system:serviceaccount:default:health-monitor-
 
 The second command prints yes. (The warning that nodes are not namespace scoped is expected, because nodes are cluster-wide.)
 
-<!-- 📸 ATTACH SCREENSHOT: 05-rbac.png (RBAC applied and can-i returning yes) --> <img src="docs/evidence/sprint2/05-rbac.png" alt="RBAC applied and permission check" width="100%" height="100%">
-Step 8 - Containerizing and Deploying the Health Monitor
+
+---
+
+## Step 8 - Containerizing and Deploying the Health Monitor
 
 Refer to: Dockerfile and deploy\manifests\health-monitor.yaml
 
@@ -376,16 +398,26 @@ kubectl apply -f deploy/manifests/health-monitor.yaml
 kubectl apply -f deploy/prometheus/prometheus-deployment.yaml
 kubectl apply -f deploy/prometheus/grafana-deployment.yaml
 kubectl get pods
-<!-- 📸 ATTACH SCREENSHOT: 03-docker-build.png (successful docker build) --> <img src="docs/evidence/sprint2/03-docker-build.png" alt="Docker image build" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Docker_Build_Status_1.png" alt="Docker image build" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Docker_Build_Status_2.png" alt="Docker image build" width="100%" height="100%">
 
 All three pods (health-monitor, prometheus, grafana) reach the Running state. The first start can take a few minutes because the Prometheus and Grafana images have to be downloaded.
 
-<!-- 📸 ATTACH SCREENSHOT: 04-pods-running.png (kubectl get pods, all 1/1 Running) --> <img src="docs/evidence/sprint2/04-pods-running.png" alt="Monitor, Prometheus and Grafana pods running" width="100%" height="100%">
+<img src="assets/Sprint2/Sprint2_Pods_Running_1.png" alt="Monitor, Prometheus and Grafana pods running" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Pods_Running_2.png" alt="Monitor, Prometheus and Grafana pods running" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Pods_Running_3.png" alt="Monitor, Prometheus and Grafana pods running" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Pods_Running_4.png" alt="Monitor, Prometheus and Grafana pods running" width="100%" height="100%">
 
 <b>Check the monitor logs :</b>
 
 kubectl logs deploy/health-monitor --tail=5
-<!-- 📸 ATTACH SCREENSHOT: 06-monitor-logs.png (monitor logs) --> <img src="docs/evidence/sprint2/06-monitor-logs.png" alt="Health monitor logs" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Monitor_Logs.png" alt="Health monitor logs" width="100%" height="100%">
 
 <b>Check the metrics endpoint :</b>
 
@@ -393,8 +425,16 @@ kubectl port-forward svc/health-monitor 18080:8080
 
 Open http://localhost:18080/metrics and search for kubernetes_health_monitor. (Local port 18080 is used because Windows blocked port 8080. Any free local port works.)
 
-<!-- 📸 ATTACH SCREENSHOT: 07-metrics-endpoint.png (metrics page showing node_cpu_usage_percent and unhealthy_pods) --> <img src="docs/evidence/sprint2/07-metrics-endpoint.png" alt="Metrics endpoint output" width="100%" height="100%">
-Step 9 - Installing Prometheus with Alert Rules
+<img src="assets/Sprint2/Sprint2_Metrics_Endpoint_1.png" alt="Metrics endpoint output" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Metrics_Endpoint_2.png" alt="Metrics endpoint output" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Metrics_Endpoint_3.png" alt="Metrics endpoint output" width="100%" height="100%">
+
+
+---
+
+## Step 9 - Installing Prometheus with Alert Rules
 
 Refer to: deploy\prometheus\prometheus-deployment.yaml
 
@@ -458,16 +498,19 @@ Open http://localhost:9090 (use another local port such as 19090 if 9090 is bloc
 
 Under Status > Targets, both the prometheus and kubernetes-health-monitor jobs show UP.
 
-<!-- 📸 ATTACH SCREENSHOT: 08-prometheus-targets.png (Status > Targets, both UP) --> <img src="docs/evidence/sprint2/08-prometheus-targets.png" alt="Prometheus targets UP" width="100%" height="100%">
+<img src="assets/Sprint2/Sprint2_Prometheus_Targets.png" alt="Prometheus targets UP" width="100%" height="100%">
 
 In the Graph tab, running kubernetes_health_monitor_node_cpu_usage_percent shows the node CPU usage.
 
-<!-- 📸 ATTACH SCREENSHOT: 09-prometheus-cpu-graph.png (graph of node CPU usage) --> <img src="docs/evidence/sprint2/09-prometheus-cpu-graph.png" alt="Node CPU usage graph in Prometheus" width="100%" height="100%">
+<img src="assets/Sprint2/Sprint2_Prometheus_CPU_Graph.png" alt="Node CPU usage graph in Prometheus" width="100%" height="100%">
 
 The Alerts page lists the six rules, all inactive while the cluster is healthy.
 
-<!-- 📸 ATTACH SCREENSHOT: 10-prometheus-alerts-inactive.png (Alerts page with six rules inactive) --> <img src="docs/evidence/sprint2/10-prometheus-alerts-inactive.png" alt="Alert rules in Prometheus" width="100%" height="100%">
-Step 10 - Connecting Grafana
+<img src="assets/Sprint2/Sprint2_Prometheus_Alerts_Inactive.png" alt="Alert rules in Prometheus" width="100%" height="100%">
+
+---
+
+## Step 10 - Connecting Grafana
 
 Refer to: deploy\prometheus\prometheus-deployment.yaml and deploy\prometheus\grafana-deployment.yaml
 
@@ -480,12 +523,20 @@ Open http://localhost:3000 (use another local port such as 13000 if 3000 is bloc
 Go to Connections > Data sources > Add data source > Prometheus.
 Set the URL to http://prometheus:9090 and click Save & test. This is the in-cluster address of the Prometheus service.
 Grafana confirms with "Successfully queried the Prometheus API".
-<!-- 📸 ATTACH SCREENSHOT: 11-grafana-datasource.png (Save & test success message) --> <img src="docs/evidence/sprint2/11-grafana-datasource.png" alt="Grafana Prometheus data source" width="100%" height="100%">
+
+<img src="assets/Sprint2/Sprint2_Grafana_Datasource_1.png" alt="Grafana Prometheus data source" width="100%" height="100%">
+
+
+<img src="assets/Sprint2/Sprint2_Grafana_Datasource_2.png" alt="Grafana Prometheus data source" width="100%" height="100%">
 
 Then create a dashboard named "Cluster Health" with a panel that uses the query kubernetes_health_monitor_node_cpu_usage_percent.
 
-<!-- 📸 ATTACH SCREENSHOT: 12-grafana-panel.png (Cluster Health dashboard with the CPU panel) --> <img src="docs/evidence/sprint2/12-grafana-panel.png" alt="Grafana dashboard showing node CPU usage" width="100%" height="100%">
-Step 11 - Testing the Alerts
+<img src="assets/Sprint2/Sprint2_Grafana_Panel.png" alt="Grafana dashboard showing node CPU usage" width="100%" height="100%">
+
+
+---
+
+## Step 11 - Testing the Alerts
 
 The monitor is tested by creating a pod that can never start, because its image does not exist.
 
@@ -494,11 +545,11 @@ kubectl logs deploy/health-monitor --tail=10
 
 The monitor logs the container as waiting with the reason ImagePullBackOff.
 
-<!-- 📸 ATTACH SCREENSHOT: 13-bad-pod-log.png (monitor log showing the bad pod alert) --> <img src="docs/evidence/sprint2/13-bad-pod-log.png" alt="Monitor detecting the bad pod" width="100%" height="100%">
+<img src="assets/Sprint2/Sprint2_Bad_Pod_Log.png" alt="Monitor detecting the bad pod" width="100%" height="100%">
 
 After about a minute the UnhealthyPodsDetected alert changes from Pending to Firing on the Prometheus Alerts page.
 
-<!-- 📸 ATTACH SCREENSHOT: 14-alert-firing.png (UnhealthyPodsDetected firing) --> <img src="docs/evidence/sprint2/14-alert-firing.png" alt="UnhealthyPodsDetected alert firing" width="100%" height="100%">
+<img src="assets/Sprint2/Sprint2_Bad_Pod_Alert_Firing.png" alt="Monitor detecting the bad pod" width="100%" height="100%">
 
 <b>Clean up :</b>
 
@@ -506,8 +557,13 @@ kubectl delete deployment bad-pod
 
 The alert returns to inactive after about a minute.
 
-<!-- 📸 OPTIONAL SCREENSHOT: 15-alert-cleared.png (alert back to inactive) -->
-Sprint 2 - Summary of Changes
+<img src="assets/Sprint2/Sprint2_Bad_Pod_Alert_Cleared_1.png" alt="Monitor detecting the bad pod" width="100%" height="100%">
+
+
+---
+
+## Sprint 2 - Summary of Changes
+
 File	Change
 internal/k8sclient/client.go	Added the metrics client, GetNodes() and GetNodeMetricsData()
 internal/monitor/monitor.go	Added CheckNodes() and extended CheckPods() (phase, restarts, waiting state)
@@ -521,6 +577,8 @@ deploy/prometheus/prometheus-deployment.yaml	Prometheus with scrape config, six 
 deploy/prometheus/grafana-deployment.yaml	Grafana Deployment and Service
 
 <b>Result :</b> The cluster is monitored for pod and node health, node CPU and memory usage is measured, all data is exposed to Prometheus, Grafana visualizes it, and six threshold-based alerts detect critical problems. The monitor is read-only at this stage.
+
+---
 <b></b>
 <b></b>
 <b></b>
