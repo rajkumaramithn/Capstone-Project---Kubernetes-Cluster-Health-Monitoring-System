@@ -169,3 +169,75 @@ subjects:
 <b></b>
 <b></b>
 <b></b>
+## Sprint 6 – Web Dashboard and Final Documentation
+
+### Grafana Dashboard Integration
+
+Grafana was configured to use Prometheus as its data source.
+
+Prometheus server URL:
+`http://prometheus:9090`
+
+A Kubernetes Cluster Health Monitoring dashboard was created with an Unhealthy Pods Stat visualization using the following Prometheus query:
+
+```promql
+kubernetes_health_monitor_unhealthy_pods
+```
+
+The dashboard provides visibility into the current unhealthy pod count.
+
+The monitoring application also exports additional metrics for:
+- Kubernetes pod status by namespace and phase.
+- Node readiness and resource pressure.
+- Node CPU and memory utilization.
+- Container restart counts.
+- Pods with excessive restarts.
+- Node scaling recommendations.
+
+These metrics can be used to extend the Grafana dashboard with additional visualizations.
+
+### Final Deployment Validation
+
+The following deployments were verified in the Docker Desktop Kubernetes cluster:
+
+| Component | Deployment status |
+|---|---|
+| Grafana | 1/1 Running |
+| Prometheus | 1/1 Running |
+| Health Monitor | 1/1 Running |
+| Alertmanager | 1/1 Running |
+| HPA Demo | 1/1 Running |
+| Resource Balanced Demo | 3/3 Running |
+
+### Application Testing
+
+The Go application test suite was executed successfully:
+
+```powershell
+go test ./...
+```
+
+All packages containing tests passed successfully.
+
+### Sprint 6 Evidence
+
+Screenshots and supporting evidence are maintained in:
+
+`docs/evidence/sprint6/`
+
+Evidence includes:
+- Grafana dashboard.
+- Go test execution.
+- Kubernetes deployment and pod validation.
+
+### Environment and Limitations
+
+The project was validated using Docker Desktop Kubernetes with a single node (`docker-desktop`).
+
+Horizontal Pod Autoscaler behavior and resource monitoring were demonstrated. Multi-node workload distribution was not tested in this single-node environment.
+
+### Project Completion
+
+The project integrates Kubernetes health monitoring, automated recovery capabilities, Prometheus metrics collection, Grafana visualization, Alertmanager alert routing and Slack notifications.
+
+The six-sprint implementation provides an integrated foundation for Kubernetes cluster health monitoring and auto-healing.
