@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System/internal/healer"
 	"Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System/internal/k8sclient"
 	"Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System/internal/monitor"
 )
@@ -52,11 +51,17 @@ func main() {
 		pods := client.GetPods("default")
 		nodes := client.GetNodes()
 
+		nodeMetrics, err := client.GetNodeMetricsData()
+		if err != nil {
+			log.Printf("Error fetching node metrics: %v", err)
+		} else {
+			monitor.UpdateNodeResourceMetrics(nodes, nodeMetrics)
+		}
+
 		monitor.CheckPods(pods)
 		monitor.CheckNodes(nodes)
 		monitor.UpdateMetrics(pods)
 		monitor.UpdateNodeMetrics(nodes)
-		healer.HealFailedPods(client, pods)
 
 		select {
 		case <-ctx.Done():

@@ -1,14 +1,37 @@
 package monitor
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	v1 "k8s.io/api/core/v1"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 )
 
 var (
+	nodeCPUUsage = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_cpu_usage_percent",
+			Help: "Node CPU utilization percentage.",
+		},
+		[]string{"node"},
+	)
+	nodeMemoryUsage = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_memory_usage_percent",
+			Help: "Node memory utilization percentage.",
+		},
+		[]string{"node"},
+	)
+	nodeScalingRecommendation = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_scaling_recommendation",
+			Help: "Node scaling recommendation: 1 means scaling recommended, 0 means not recommended.",
+		},
+		[]string{"node", "resource"},
+	)
 	podCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_pods",
@@ -16,7 +39,6 @@ var (
 		},
 		[]string{"namespace", "phase"},
 	)
-
 	containerRestarts = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_container_restarts",
@@ -24,14 +46,12 @@ var (
 		},
 		[]string{"namespace", "pod", "container"},
 	)
-
 	unhealthyPods = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_unhealthy_pods",
 			Help: "Number of observed pods considered unhealthy.",
 		},
 	)
-
 	nodeCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_nodes",
@@ -39,7 +59,6 @@ var (
 		},
 		[]string{"node", "status"},
 	)
-
 	nodePressure = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_node_pressure",
@@ -56,6 +75,9 @@ func init() {
 		unhealthyPods,
 		nodeCount,
 		nodePressure,
+		nodeCPUUsage,
+		nodeMemoryUsage,
+		nodeScalingRecommendation,
 	)
 }
 
@@ -134,6 +156,75 @@ func UpdateNodeMetrics(nodes []v1.Node) {
 			}
 
 			nodePressure.WithLabelValues(node.Name, string(conditionType)).Set(value)
+		}
+	}
+}
+
+// UpdateNodeResourceMetrics calculates node CPU and memory utilization.
+func UpdateNodeResourceMetrics(nodes []v1.Node, metrics []metricsv1beta1.NodeMetrics) {
+	nodeCPUUsage.Reset()
+	nodeMemoryUsage.Reset()
+	nodeScalingRecommendation.Reset()
+
+	const warningThreshold = 70.0
+	const scalingThreshold = 85.0
+
+	for _, node := range nodes {
+		var cpuPercent, memoryPercent float64
+
+		for _, nodeMetric := range metrics {
+			if nodeMetric.Name != node.Name {
+				continue
+			}
+
+			cpuCapacity := node.Status.Capacity.Cpu().MilliValue()
+			memoryCapacity := node.Status.Capacity.Memory().Value()
+
+			if cpuCapacity > 0 {
+				cpuPercent = float64(nodeMetric.Usage.Cpu().MilliValue()) /
+					float64(cpuCapacity) * 100
+			}
+
+			if memoryCapacity > 0 {
+				memoryPercent = float64(nodeMetric.Usage.Memory().Value()) /
+					float64(memoryCapacity) * 100
+			}
+			break
+		}
+
+		nodeCPUUsage.WithLabelValues(node.Name).Set(cpuPercent)
+		nodeMemoryUsage.WithLabelValues(node.Name).Set(memoryPercent)
+
+		for resourceName, utilization := range map[string]float64{
+			"cpu":    cpuPercent,
+			"memory": memoryPercent,
+		} {
+			recommendation := float64(0)
+
+			if utilization >= scalingThreshold {
+				recommendation = 1
+			}
+
+			nodeScalingRecommendation.WithLabelValues(
+				node.Name,
+				resourceName,
+			).Set(recommendation)
+
+			if utilization >= scalingThreshold {
+				fmt.Printf(
+					"SCALE RECOMMENDATION: Node %s %s utilization is %.2f%%\n",
+					node.Name,
+					resourceName,
+					utilization,
+				)
+			} else if utilization >= warningThreshold {
+				fmt.Printf(
+					"WARNING: Node %s %s utilization is %.2f%%\n",
+					node.Name,
+					resourceName,
+					utilization,
+				)
+			}
 		}
 	}
 }
