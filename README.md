@@ -565,15 +565,25 @@ The alert returns to inactive after about a minute.
 ## Sprint 2 - Summary of Changes
 
 File	Change
+
 internal/k8sclient/client.go	Added the metrics client, GetNodes() and GetNodeMetricsData()
+
 internal/monitor/monitor.go	Added CheckNodes() and extended CheckPods() (phase, restarts, waiting state)
+
 internal/monitor/metrics.go	Added the Prometheus metrics, CPU and memory percentage calculation and the /metrics handler
+
 cmd/healer/main.go	Runs the metrics endpoint and the monitoring loop with graceful shutdown
+
 go.mod, go.sum	Added the Prometheus client and k8s.io/metrics dependencies
+
 deploy/manifests/rbac.yaml	Read-only access to nodes and the node metrics API
+
 Dockerfile	Multi-stage build running as a non-root user
+
 deploy/manifests/health-monitor.yaml	Deployment, Service, health probes and resource limits
+
 deploy/prometheus/prometheus-deployment.yaml	Prometheus with scrape config, six alert rules, resource limits and 2-day retention
+
 deploy/prometheus/grafana-deployment.yaml	Grafana Deployment and Service
 
 <b>Result :</b> The cluster is monitored for pod and node health, node CPU and memory usage is measured, all data is exposed to Prometheus, Grafana visualizes it, and six threshold-based alerts detect critical problems. The monitor is read-only at this stage.
