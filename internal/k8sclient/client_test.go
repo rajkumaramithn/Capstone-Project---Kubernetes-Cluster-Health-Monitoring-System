@@ -128,3 +128,31 @@ func TestDeleteFailedControllerPodSkipsStaleUID(t *testing.T) {
 		}
 	}
 }
+
+func TestUnhealthyReason(t *testing.T) {
+	crash := &v1.Pod{Status: v1.PodStatus{
+		Phase: v1.PodRunning,
+		ContainerStatuses: []v1.ContainerStatus{{
+			RestartCount: 3,
+			State: v1.ContainerState{
+				Waiting: &v1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+			},
+		}},
+	}}
+	evicted := &v1.Pod{Status: v1.PodStatus{Phase: v1.PodFailed, Reason: "Evicted"}}
+	failed := &v1.Pod{Status: v1.PodStatus{Phase: v1.PodFailed}}
+	healthy := &v1.Pod{Status: v1.PodStatus{Phase: v1.PodRunning}}
+
+	if got := UnhealthyReason(crash); got != "CrashLoopBackOff" {
+		t.Errorf("crash pod: got %q", got)
+	}
+	if got := UnhealthyReason(evicted); got != "Evicted" {
+		t.Errorf("evicted pod: got %q", got)
+	}
+	if got := UnhealthyReason(failed); got != "Failed" {
+		t.Errorf("failed pod: got %q", got)
+	}
+	if got := UnhealthyReason(healthy); got != "" {
+		t.Errorf("healthy pod: got %q", got)
+	}
+}

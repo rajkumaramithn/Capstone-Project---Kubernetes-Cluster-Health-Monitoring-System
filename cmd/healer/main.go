@@ -52,6 +52,13 @@ func main() {
 		pods := client.GetPods("default")
 		nodes := client.GetNodes()
 
+		nodeMetrics, err := client.GetNodeMetricsData()
+		if err != nil {
+			log.Printf("Error fetching node metrics: %v", err)
+		} else {
+			monitor.UpdateNodeResourceMetrics(nodes, nodeMetrics)
+		}
+
 		monitor.CheckPods(pods)
 		monitor.CheckNodes(nodes)
 		monitor.UpdateMetrics(pods)
