@@ -80,3 +80,25 @@ func TestHealFailedPodsContinuesAfterError(t *testing.T) {
 		t.Fatalf("expected recovery to be attempted for both pods, got %d calls", client.calls)
 	}
 }
+
+func TestHealFailedPodsRequestsRecoveryForCrashLoopPod(t *testing.T) {
+	client := &fakePodHealer{deleted: true}
+	pod := v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "crash-pod", Namespace: "default"},
+		Status: v1.PodStatus{
+			Phase: v1.PodRunning,
+			ContainerStatuses: []v1.ContainerStatus{{
+				RestartCount: 3,
+				State: v1.ContainerState{
+					Waiting: &v1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+				},
+			}},
+		},
+	}
+
+	HealFailedPods(client, []v1.Pod{pod})
+
+	if client.calls != 1 {
+		t.Fatalf("expected 1 recovery request, got %d", client.calls)
+	}
+}

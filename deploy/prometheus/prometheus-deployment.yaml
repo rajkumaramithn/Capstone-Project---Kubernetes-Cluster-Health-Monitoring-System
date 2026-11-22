@@ -8,8 +8,10 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+
     rule_files:
       - /etc/prometheus/alerts.yml
+
     scrape_configs:
       - job_name: prometheus
         static_configs:
@@ -18,10 +20,20 @@ data:
         metrics_path: /metrics
         static_configs:
           - targets: ["health-monitor:8080"]
+
   alerts.yml: |
     groups:
       - name: kubernetes-health-monitor
         rules:
+          - alert: HealthMonitorDown
+            expr: up{job="kubernetes-health-monitor"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: Health monitor is down
+              description: "The health monitor target has been unreachable for 1 minute."
+
           - alert: UnhealthyPodsDetected
             expr: kubernetes_health_monitor_unhealthy_pods > 0
             for: 1m
@@ -30,6 +42,7 @@ data:
             annotations:
               summary: Unhealthy Kubernetes pods detected
               description: "The health monitor reports {{ $value }} unhealthy pod(s)."
+
           - alert: KubernetesNodeNotReady
             expr: kubernetes_health_monitor_nodes{status!="Ready"} > 0
             for: 2m
@@ -38,6 +51,7 @@ data:
             annotations:
               summary: Kubernetes node is not ready
               description: "Node {{ $labels.node }} has readiness status {{ $labels.status }}."
+
           - alert: KubernetesNodeResourcePressure
             expr: kubernetes_health_monitor_node_pressure == 1
             for: 2m
@@ -46,6 +60,24 @@ data:
             annotations:
               summary: Kubernetes node resource pressure detected
               description: "Node {{ $labels.node }} reports {{ $labels.condition }}."
+
+          - alert: HighNodeCPU
+            expr: kubernetes_health_monitor_node_cpu_usage_percent > 85
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: High node CPU usage
+              description: "Node {{ $labels.node }} CPU usage is {{ $value }}%."
+
+          - alert: HighNodeMemory
+            expr: kubernetes_health_monitor_node_memory_usage_percent > 85
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: High node memory usage
+              description: "Node {{ $labels.node }} memory usage is {{ $value }}%."
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -68,9 +100,16 @@ spec:
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=2d
           ports:
             - name: web
               containerPort: 9090
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
           volumeMounts:
             - name: config
               mountPath: /etc/prometheus

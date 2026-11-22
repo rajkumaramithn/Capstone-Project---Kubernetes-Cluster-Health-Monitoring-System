@@ -20,6 +20,13 @@ spec:
         - name: health-monitor
           image: health-monitor:latest
           imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
           ports:
             - name: metrics
               containerPort: 8080

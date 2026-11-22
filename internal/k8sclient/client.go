@@ -107,6 +107,26 @@ func (c *Client) GetNodeMetricsData() ([]metricsv1beta1.NodeMetrics, error) {
 	return metrics.Items, nil
 }
 
+// UnhealthyReason returns why a pod should be healed, or "" if it should be left alone.
+func UnhealthyReason(pod *v1.Pod) string {
+	if pod.Status.Phase == v1.PodFailed {
+		if pod.Status.Reason == "Evicted" {
+			return "Evicted"
+		}
+		return "Failed"
+	}
+
+	for _, cs := range pod.Status.ContainerStatuses {
+		if w := cs.State.Waiting; w != nil &&
+			w.Reason == "CrashLoopBackOff" &&
+			cs.RestartCount >= 3 {
+			return "CrashLoopBackOff"
+		}
+	}
+
+	return ""
+}
+
 // DeleteFailedControllerPod safely deletes a failed controller-managed pod.
 func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (bool, error) {
 	// Re-read the pod to avoid acting on stale information.
@@ -119,8 +139,9 @@ func (c *Client) DeleteFailedControllerPod(ctx context.Context, pod v1.Pod) (boo
 		return false, err
 	}
 
-	// Confirm that this is still the same pod and is still failed.
-	if current.UID != pod.UID || current.Status.Phase != v1.PodFailed {
+	// DeleteFailedControllerPod safely deletes a failed, evicted or crash-looping
+	// controller-managed pod.
+	if current.UID != pod.UID || UnhealthyReason(current) == "" {
 		return false, nil
 	}
 

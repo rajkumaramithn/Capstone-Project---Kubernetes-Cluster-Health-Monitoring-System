@@ -2,7 +2,10 @@ package healer
 
 import (
 	"context"
-	"fmt"
+	"log"
+
+	"Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System/internal/k8sclient"
+	"Capstone-Project---Kubernetes-Cluster-Health-Monitoring-System/internal/monitor"
 
 	v1 "k8s.io/api/core/v1"
 )
@@ -14,10 +17,12 @@ type podHealer interface {
 	) (bool, error)
 }
 
-// HealFailedPods requests recovery for failed, controller-managed pods.
+// HealFailedPods requests recovery for failed, evicted or crash-looping
+// controller-managed pods. The owning controller recreates each deleted pod.
 func HealFailedPods(client podHealer, pods []v1.Pod) {
 	for _, pod := range pods {
-		if pod.Status.Phase != v1.PodFailed {
+		reason := k8sclient.UnhealthyReason(&pod)
+		if reason == "" {
 			continue
 		}
 
@@ -26,21 +31,13 @@ func HealFailedPods(client podHealer, pods []v1.Pod) {
 			pod,
 		)
 		if err != nil {
-			fmt.Printf(
-				"HEAL ERROR: Pod %s/%s: %v\n",
-				pod.Namespace,
-				pod.Name,
-				err,
-			)
+			log.Printf("HEAL ERROR ns=%s pod=%s err=%v", pod.Namespace, pod.Name, err)
 			continue
 		}
 
 		if deleted {
-			fmt.Printf(
-				"HEAL: Deleted failed controller-managed pod %s/%s; controller may recreate it\n",
-				pod.Namespace,
-				pod.Name,
-			)
+			log.Printf("HEAL action=delete_pod ns=%s pod=%s reason=%s", pod.Namespace, pod.Name, reason)
+			monitor.RecordHealingAction(pod.Namespace, reason)
 		}
 	}
 }

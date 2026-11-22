@@ -59,6 +59,13 @@ var (
 		},
 		[]string{"node", "status"},
 	)
+	healingActions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kubernetes_health_monitor_healing_actions_total",
+			Help: "Self-healing actions taken, by namespace and reason.",
+		},
+		[]string{"namespace", "reason"},
+	)
 	nodePressure = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_node_pressure",
@@ -78,6 +85,7 @@ func init() {
 		nodeCPUUsage,
 		nodeMemoryUsage,
 		nodeScalingRecommendation,
+		healingActions,
 	)
 }
 
@@ -232,4 +240,9 @@ func UpdateNodeResourceMetrics(nodes []v1.Node, metrics []metricsv1beta1.NodeMet
 // MetricsHandler returns the HTTP handler used by Prometheus to scrape metrics.
 func MetricsHandler() http.Handler {
 	return promhttp.Handler()
+}
+
+// RecordHealingAction counts a self-healing action.
+func RecordHealingAction(namespace, reason string) {
+	healingActions.WithLabelValues(namespace, reason).Inc()
 }
