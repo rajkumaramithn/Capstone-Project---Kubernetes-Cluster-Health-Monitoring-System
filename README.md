@@ -1452,6 +1452,448 @@ kubectl delete -f deploy/manifests/resource-balanced-deployment.yaml
 
 ---
 
+## Sprint 5 - Alerting and Notification System Integration
+
+In Sprint 5 the system starts telling people when something is wrong. Prometheus evaluates the alert rules, Alertmanager groups and routes the alerts by severity, and Slack receives the notifications in real time, including a message when the problem is resolved. The alerts cover pod and node health, resource usage, repeated restarts, self-healing activity and scaling recommendations, so the team knows both what failed and what the system did about it.
+
+<b>Cluster used :</b> Minikube (single node, with the metrics-server addon)
+
+<b>Sprint 5 Overview</b>
+
+📁 deploy/prometheus
+</br><i>Prometheus now sends its alerts to Alertmanager and has nine alert rules</i>
+
+📁 deploy/alertmanager
+</br><i>Alertmanager with a separate Slack receiver for each severity level</i>
+
+📁 internal/monitor
+</br><i>Restarts are tracked in their own metric, so old restarts no longer count as unhealthy pods</i>
+
+<b>The Alerting Pipeline</b>
+
+```
+Health Checker  ->  Prometheus  ->  Alertmanager  ->  Slack
+ (metrics)        (alert rules)   (grouping and      (notifications)
+                                   routing by severity)
+```
+
+1. The Health Checker publishes metrics at /metrics.
+2. Prometheus scrapes them every 15 seconds and evaluates the alert rules.
+3. When a rule stays true for its waiting time, Prometheus sends the alert to Alertmanager.
+4. Alertmanager groups related alerts, routes them by severity and posts them to Slack. It also posts a RESOLVED message when the problem goes away.
+
+---
+
+
+## Step 1 - Separating Restarts from Unhealthy Pods
+
+</br><b>Monitor Logic (internal/monitor/monitor.go)</b>
+
+Refer to: internal\monitor\monitor.go
+
+Before this sprint, a pod that had restarted more than 3 times was reported as unhealthy for the rest of its life, even when it was running normally again. A pod such as Grafana, which restarted while the laptop slept, would keep raising false alerts. The restart alert was removed from CheckPods(). Restarts are now tracked in their own metric (Step 2). The check for containers stuck in a waiting state stays.
+
+```go
+for _, container := range pod.Status.ContainerStatuses {
+	if waiting := container.State.Waiting; waiting != nil {
+		alerts.SendAlert(fmt.Sprintf(
+			"Container %s in pod %s/%s is waiting: %s",
+			container.Name,
+			pod.Namespace,
+			pod.Name,
+			waiting.Reason,
+		))
+	}
+}
+```
+
+---
+
+
+## Step 2 - A Separate Metric for Excessive Restarts
+
+</br><b>Metrics Module (internal/monitor/metrics.go)</b>
+
+Refer to: internal\monitor\metrics.go
+
+A new gauge marks pods that have restarted more than 3 times, so they can still be seen and alerted on, but are no longer mixed into the unhealthy pod count.
+
+```go
+podsWithExcessiveRestarts = prometheus.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "kubernetes_health_monitor_pods_with_excessive_restarts",
+		Help: "Pods with containers exceeding the restart threshold.",
+	},
+	[]string{"namespace", "pod"},
+)
+```
+
+UpdateMetrics() now counts a pod as unhealthy only when it has failed, has an unknown status, or has a container in a waiting state. A high restart count sets the new gauge instead:
+
+```go
+for _, container := range pod.Status.ContainerStatuses {
+	containerRestarts.WithLabelValues(
+		pod.Namespace, pod.Name, container.Name,
+	).Set(float64(container.RestartCount))
+
+	if container.RestartCount > 3 {
+		hasExcessiveRestarts = true
+	}
+
+	if container.State.Waiting != nil {
+		isUnhealthy = true
+	}
+}
+
+if hasExcessiveRestarts {
+	podsWithExcessiveRestarts.
+		WithLabelValues(pod.Namespace, pod.Name).
+		Set(1)
+}
+```
+
+A crash-looping pod is still counted as unhealthy, because its container is in a waiting state, so the self-healing from Sprint 3 and the alerts are unaffected.
+
+---
+
+
+## Step 3 - Unit Test for the New Behaviour
+
+Refer to: internal\monitor\monitor_test.go
+
+The new test, TestUpdateMetricsSeparatesRestartsFromUnhealthyPods, uses a running pod whose container restarted 5 times. It checks three things: the unhealthy pod count stays 0, the excessive restarts metric is 1, and the restart count metric is 5.
+
+<b>On the Command Line Terminal Run :</b>
+
+```
+go mod tidy
+go build ./...
+go test ./...
+```
+
+All packages build and the tests pass.
+
+
+<img src="assets/Sprint5/Sprint5-Go-Test-Pass.png" alt="Go tests passing" width="100%" height="100%">
+
+---
+
+
+## Step 4 - Connecting Prometheus to Alertmanager
+
+Refer to: deploy\prometheus\prometheus-deployment.yaml
+
+The Prometheus configuration gains an `alerting` section that points at the Alertmanager service. In the earlier version of this file the block was indented too deeply, so Prometheus could not read it. It is now at the same level as `rule_files`.
+
+```yaml
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+```
+
+All the Prometheus configuration (scrape settings and alert rules) lives in this one file, so there are no separate config files that could drift apart.
+
+---
+
+
+## Step 5 - Alert Rules by Severity
+
+Refer to: deploy\prometheus\prometheus-deployment.yaml
+
+Nine alert rules were defined in three severity levels:
+
+| Alert | Condition | Waits | Severity |
+|---|---|---|---|
+| HealthMonitorDown | The monitor target is unreachable | 1 minute | critical |
+| KubernetesNodeNotReady | A node is not Ready | 2 minutes | critical |
+| UnhealthyPodsDetected | unhealthy_pods is above 0 | 1 minute | warning |
+| KubernetesNodeResourcePressure | Memory, disk or PID pressure on a node | 2 minutes | warning |
+| HighNodeCPU | Node CPU above 85% | 2 minutes | warning |
+| HighNodeMemory | Node memory above 85% | 2 minutes | warning |
+| PodExcessiveRestarts | A pod restarted more than 3 times | 5 minutes | info |
+| NodeScalingRecommended | The scaling recommendation metric is 1 | 1 minute | info |
+| HealingActionTaken | The healer removed a pod in the last 5 minutes | none | info |
+
+The last two rules connect the earlier sprints to the notifications, so the team also hears about scaling and self-healing activity:
+
+```yaml
+- alert: HealingActionTaken
+  expr: increase(kubernetes_health_monitor_healing_actions_total[5m]) > 0
+  labels:
+    severity: info
+  annotations:
+    summary: Auto-healing action performed
+    description: "The healer removed a {{ $labels.reason }} pod in namespace {{ $labels.namespace }}."
+```
+
+The waiting time (`for`) stops short problems from causing alerts.
+
+---
+
+
+## Step 6 - Alertmanager with Severity-Based Routing
+
+Refer to: deploy\alertmanager\alertmanager-deployment.yaml
+
+One file holds the Alertmanager ConfigMap, Deployment and Service. Alerts are routed by severity, and each level has its own Slack receiver with its own colour, title prefix and repeat interval:
+
+| Severity | Receiver | Slack colour | Repeats every |
+|---|---|---|---|
+| critical | slack-critical | red | 1 hour (sent immediately, no grouping delay) |
+| warning | slack-warning | orange | 4 hours |
+| info | slack-info | green | 12 hours |
+
+```yaml
+route:
+  receiver: slack-warning
+  group_by: ["alertname", "severity"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: slack-critical
+      group_wait: 0s
+      repeat_interval: 1h
+    - matchers: ['severity="warning"']
+      receiver: slack-warning
+      repeat_interval: 4h
+    - matchers: ['severity="info"']
+      receiver: slack-info
+      repeat_interval: 12h
+```
+
+An inhibit rule stops the warning alerts while a node is not ready, because they would only repeat the same underlying problem:
+
+```yaml
+inhibit_rules:
+  - source_matchers: ['alertname="KubernetesNodeNotReady"']
+    target_matchers: ['severity="warning"']
+```
+
+Each receiver posts to Slack with a clear title, and also sends a RESOLVED message:
+
+```yaml
+- name: slack-critical
+  slack_configs:
+    - api_url_file: /etc/alertmanager/secrets/slack_api_url
+      channel: "#kubernetes-alerts"
+      send_resolved: true
+      color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+      title: '[CRITICAL] {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+```
+
+The Alertmanager container also has small resource requests and limits, in line with the cost optimization in the other components:
+
+```yaml
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+```
+
+---
+
+
+## Step 7 - Creating the Slack Webhook and Storing It Safely
+
+1. In Slack, create an app named Kubernetes Health Monitor at https://api.slack.com/apps.
+2. Turn on Incoming Webhooks and add a webhook to the #kubernetes-alerts channel.
+3. Copy the webhook URL.
+
+The webhook is a credential, so it is never stored in a file or in Git. It is kept in a Kubernetes Secret, and Alertmanager reads it from a mounted file:
+
+```
+kubectl create secret generic alertmanager-slack --from-literal=slack_api_url='<YOUR_SLACK_WEBHOOK_URL>'
+```
+
+The key name must be slack_api_url, because the Alertmanager configuration reads the file with that name.
+
+<img src="assets/Sprint5/Sprint5-Creating-A-Slack-App-From-Scratch.png" alt="Creating a Slack App" width="100%" height="100%">
+
+<img src="assets/Sprint5/Sprint5-Creating-A-Webhook-For-Kubernetes-Alerts.png" alt="Creating a Slack Webhook" width="100%" height="100%">
+
+---
+
+
+## Step 8 - Deploying the Stack
+
+Start a fresh cluster, build the image and deploy:
+
+```
+minikube start --driver=docker --cpus 2 --memory 2200
+minikube addons enable metrics-server
+docker build -t health-monitor:latest .
+minikube image load health-monitor:latest
+kubectl apply -f deploy/manifests/rbac.yaml
+kubectl apply -f deploy/manifests/health-monitor.yaml
+kubectl apply -f deploy/prometheus/prometheus-deployment.yaml
+kubectl apply -f deploy/prometheus/grafana-deployment.yaml
+```
+
+Then create the Secret from Step 7 and deploy Alertmanager. The Secret must exist before the Alertmanager pod starts:
+
+```
+kubectl apply -f deploy/alertmanager/alertmanager-deployment.yaml
+kubectl get pods
+kubectl get secret alertmanager-slack
+```
+
+All four pods (health-monitor, prometheus, grafana and alertmanager) reach the Running state.
+
+<img src="assets/Sprint5/Sprint5-Pods-Running.png" alt="All pods running including Alertmanager" width="100%" height="100%">
+
+The `kubectl get secret` command confirms the Secret exists without showing the webhook value.
+
+<img src="assets/Sprint5/Sprint5-Secret-Created.png" alt="Slack webhook stored as a Kubernetes Secret" width="100%" height="100%">
+
+---
+
+
+## Step 9 - Checking the Rules and the Alertmanager Configuration
+
+Open the two web interfaces with port forwarding (each command in its own terminal):
+
+```
+kubectl port-forward svc/prometheus 19090:9090
+kubectl port-forward svc/alertmanager 19093:9093
+```
+
+In Prometheus (http://localhost:19090), the Status > Rules page lists all nine rules.
+
+<img src="assets/Sprint5/Sprint5-Prometheus-Rules.png" alt="Alert rules loaded in Prometheus" width="100%" height="100%">
+
+In Alertmanager (http://localhost:19093), the Status page shows the loaded configuration with the three receivers and the severity routes.
+
+
+<img src="assets/Sprint5/Sprint5-Alertmanager-Status-1.png" alt="Alertmanager configuration" width="100%" height="100%">
+
+<img src="assets/Sprint5/Sprint5-Alertmanager-Status-2.png" alt="Alertmanager configuration" width="100%" height="100%">
+
+---
+
+
+## Step 10 - Test 1: A Warning Alert (Unhealthy Pod)
+
+Create a pod that can never start:
+
+```
+kubectl create deployment bad-pod --image=nginx:doesnotexist
+```
+
+After about a minute, the UnhealthyPodsDetected alert changes from Pending to Firing in Prometheus.
+
+<img src="assets/Sprint5/Sprint5-Prometheus-Alert-Firing.png" alt="Alert firing in Prometheus" width="100%" height="100%">
+
+Alertmanager receives it:
+
+<img src="assets/Sprint5/Sprint5-Alertmanager-Alert.png" alt="Alert received by Alertmanager" width="100%" height="100%">
+
+And Slack shows a WARNING message:
+
+<img src="assets/Sprint5/Sprint5-Slack-Warning-Firing.png" alt="Slack warning notification" width="100%" height="100%">
+
+Remove the bad pod to resolve the problem:
+
+```
+kubectl delete deployment bad-pod
+```
+
+After a few minutes, Slack shows the RESOLVED message.
+
+<img src="assets/Sprint5/Sprint5-Slack-Warning-Resolved.png" alt="Slack resolved notification" width="100%" height="100%">
+
+---
+
+
+## Step 11 - Test 2: A Critical Alert (The Monitor Stops)
+
+This test needs no file changes. Stopping the Health Checker makes its metrics endpoint unreachable:
+
+```
+kubectl scale deployment health-monitor --replicas=0
+```
+
+After about a minute, the HealthMonitorDown alert fires and Slack shows a red CRITICAL message. Critical alerts skip the grouping delay.
+
+<img src="assets/Sprint5/Sprint5-Slack-Critical.png" alt="Slack critical notification" width="100%" height="100%">
+
+Restore the monitor, and the alert resolves:
+
+```
+kubectl scale deployment health-monitor --replicas=1
+```
+
+---
+
+
+## Step 12 - Test 3: An Info Alert (Self-Healing Activity)
+
+Deploy the crash-looping test workload from Sprint 3:
+
+```
+kubectl apply -f deploy/manifests/crashloop-test.yaml
+```
+
+The healer removes the crash-looping pod again and again. After the second removal, which takes a few minutes, the HealingActionTaken alert fires and Slack shows an INFO message. An UnhealthyPodsDetected warning also appears for the crashing pod, which is expected.
+
+<img src="assets/Sprint5/Sprint5-Slack-Info-Healing.png" alt="Slack info notification for self-healing" width="100%" height="100%">
+
+Clean up:
+
+```
+kubectl delete -f deploy/manifests/crashloop-test.yaml
+```
+
+After a few minutes, no alerts remain active in Prometheus.
+
+<img src="assets/Sprint5/Sprint5-No-Active-Alerts.png" alt="No active alerts" width="100%" height="100%">
+
+---
+
+
+## Managing the Alerts
+
+| Task | How |
+|---|---|
+| Change a threshold or add a rule | Edit the `alerts.yml` section in prometheus-deployment.yaml, run `kubectl apply -f deploy/prometheus/prometheus-deployment.yaml`, then `kubectl rollout restart deployment/prometheus` |
+| Change the routing, colours or repeat times | Edit the ConfigMap in alertmanager-deployment.yaml, run `kubectl apply -f deploy/alertmanager/alertmanager-deployment.yaml`, then `kubectl rollout restart deployment/alertmanager` |
+| Send alerts to a different Slack channel | Change the `channel:` line of each receiver, or create the webhook for another channel |
+| Replace the webhook | `kubectl delete secret alertmanager-slack`, create it again with the new URL, then `kubectl rollout restart deployment/alertmanager` |
+| See what is firing | The Alerts page in Prometheus, or the Alertmanager UI |
+| Silence an alert for maintenance | Use Silences in the Alertmanager UI |
+
+Notes:
+
+- The first-ever healing action does not trigger HealingActionTaken, because the increase function needs two data points. Repeated healing does.
+- While a node is not ready, warning alerts are suppressed by the inhibit rule.
+- Never commit the webhook or show it in screenshots. If it leaks, revoke it in Slack and create a new one.
+- Notifications go to Slack. Teams can be added in the same way, as another receiver with its own webhook.
+
+---
+
+
+## Sprint 5 - Summary of Changes
+
+| File | Change |
+|---|---|
+| internal/monitor/monitor.go | Removed the restart-count alert from CheckPods() |
+| internal/monitor/metrics.go | Added the pods_with_excessive_restarts gauge and separated restarts from unhealthy pods in UpdateMetrics() |
+| internal/monitor/monitor_test.go | Added a test for the separated restart tracking |
+| deploy/prometheus/prometheus-deployment.yaml | Fixed the alerting block that points to Alertmanager and defined nine alert rules in three severity levels |
+| deploy/alertmanager/alertmanager-deployment.yaml | Config, Deployment and Service in one file, with a Slack receiver per severity, an inhibit rule and resource limits |
+| Kubernetes Secret alertmanager-slack | Holds the Slack webhook outside Git |
+| deploy/prometheus/prometheus.yml, alerts.yml and deploy/alertmanager/alertmanager.yml | Removed, because the configuration lives in the deployment files |
+
+<b>Result :</b> The team is notified in real time. Prometheus detects problems, Alertmanager routes them by severity (critical, warning and info) and Slack delivers firing and resolved messages. The alerts cover pod and node health, resource pressure, restarts, self-healing activity and scaling recommendations. All three severity levels were tested end to end.
+
+---
 <b></b>
 <b></b>
 <b></b>
