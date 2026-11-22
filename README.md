@@ -1072,6 +1072,386 @@ kubectl delete pod solo
 
 ---
 
+## Sprint 4 - Advanced Self-Healing (Node Scaling & Resource Balancing)
+
+In Sprint 4 the system learns to scale and balance itself. It adds worker nodes when the cluster is busy and removes them when it is idle, scales workloads automatically with a Horizontal Pod Autoscaler (HPA), and spreads pods evenly across the nodes. All of it was tested under simulated load. The decisions for node scaling use the node CPU and memory metrics that the Health Checker has published since Sprint 2, so no Go code changes were needed in this sprint.
+
+<b>Cluster used :</b> Minikube with 2 nodes at the start (control plane and one worker) and the metrics-server addon. The scaler grows it to 3 nodes and shrinks it back.
+
+<b>Sprint 4 Overview</b>
+
+📁 scripts
+</br><i>New Python node scaler that adds or removes a worker node based on utilization</i>
+
+📁 deploy/manifests
+</br><i>Resource balancing (topology spread), HPA settings and a load generator for the load test</i>
+
+📁 requirements.txt
+</br><i>Documents that the scaler uses only the Python standard library</i>
+
+<b>How Scaling Works</b>
+
+| Layer | Mechanism | Trigger |
+|---|---|---|
+| Pods | Horizontal Pod Autoscaler | Average pod CPU above 50% of its request |
+| Nodes | scripts/node_scaler.py | Average node utilization (the higher of CPU and memory) at or above 85% to add a node, or at or below 30% to remove one |
+| Placement | Topology spread constraint | Always: pods are spread evenly across nodes |
+
+
+---
+
+
+## Step 1 - Starting a Multi-Node Cluster
+
+Node scaling and pod redistribution cannot be shown on a single node, so the cluster starts with two nodes.
+
+<b>On the Command Line Terminal Run :</b>
+
+```
+minikube start --driver=docker --nodes 2 --cpus 2 --memory 2000
+minikube addons enable metrics-server
+kubectl get nodes
+kubectl top nodes
+```
+
+Wait until `minikube-metrics-server` is running and `kubectl top nodes` shows CPU and memory for both nodes. This can take a few minutes after the addon is enabled.
+
+<img src="assets/Sprint4/Sprint4-Cluster-Two-Nodes.png" alt="Two node cluster and node resource usage" width="100%" height="100%">
+
+---
+
+
+## Step 2 - Building and Testing the Code
+
+No Go code was changed in this sprint. The build and tests are run to confirm that the code carried over from Sprint 3 is intact.
+
+```
+go mod tidy
+go build ./...
+go test ./...
+```
+
+<img src="assets/Sprint4/Sprint4-Go-Test-Pass.png" alt="Go tests passing" width="100%" height="100%">
+
+---
+
+
+## Step 3 - Deploying the Monitoring Stack
+
+Build the image, load it into Minikube and deploy the monitor, Prometheus and Grafana:
+
+```
+docker build -t health-monitor:latest .
+minikube image load health-monitor:latest
+kubectl apply -f deploy/manifests/rbac.yaml
+kubectl apply -f deploy/manifests/health-monitor.yaml
+kubectl apply -f deploy/prometheus/prometheus-deployment.yaml
+kubectl apply -f deploy/prometheus/grafana-deployment.yaml
+kubectl get pods -o wide
+```
+
+The `-o wide` option also shows which node each pod runs on.
+
+
+<img src="assets/Sprint4/Sprint4-Baseline-Pods.png" alt="Baseline pods and their nodes" width="100%" height="100%">
+
+---
+
+
+## Step 4 - Resource Balancing Across Nodes
+
+Refer to: deploy\manifests\resource-balanced-deployment.yaml
+
+The demo Deployment runs 3 replicas with CPU and memory requests and limits. The new `topologySpreadConstraints` block tells the scheduler to keep the number of pods on each node within 1 of each other, so no node ends up overloaded while another sits idle.
+
+```yaml
+spec:
+  template:
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: resource-balanced-demo
+```
+
+`ScheduleAnyway` means the constraint is a strong preference and not a hard rule, so pods are never left Pending when a node is full.
+
+<b>Deploy and check where the pods landed :</b>
+
+```
+kubectl apply -f deploy/manifests/resource-balanced-deployment.yaml
+kubectl get pods -o wide -l app=resource-balanced-demo
+```
+
+The 3 pods are spread over the two nodes (2 and 1).
+
+
+<img src="assets/Sprint4/Sprint4-Balanced-Pods-Two-Nodes.png" alt="Pods balanced across two nodes" width="100%" height="100%">
+
+---
+
+
+## Step 5 - Pod Autoscaling with a Load Test (HPA)
+
+Refer to: deploy\manifests\hpa-test-deployment.yaml, hpa-demo.yaml and load-generator.yaml
+
+<b>The workload (hpa-test-deployment.yaml) :</b> an nginx Deployment with a CPU request of 100m, which the HPA uses as its baseline. A Service named hpa-demo was added so the load generator can reach it.
+
+```yaml
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 300m
+    memory: 128Mi
+```
+
+<b>The autoscaler (hpa-demo.yaml) :</b> keeps between 1 and 4 replicas and adds pods when average CPU use goes above 50% of the request. The new `behavior` block shortens the scale-down wait from the default 5 minutes to 60 seconds, so unused pods are released sooner and cost less.
+
+```yaml
+spec:
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+```
+
+<b>The simulated load (load-generator.yaml) :</b> three busybox pods that send requests to hpa-demo in a loop.
+
+```yaml
+command: ["sh", "-c", "while true; do wget -q -O- http://hpa-demo > /dev/null; done"]
+```
+
+<b>Deploy the workload and the autoscaler :</b>
+
+```
+kubectl apply -f deploy/manifests/hpa-test-deployment.yaml
+kubectl apply -f deploy/manifests/hpa-demo.yaml
+kubectl get hpa
+```
+
+Wait until the TARGETS column shows a percentage and not `<unknown>`.
+
+
+<img src="assets/Sprint4/Sprint4-Hpa-Before-Load.png" alt="HPA before load" width="100%" height="100%">
+
+<b>Start the load and watch the HPA scale up :</b>
+
+```
+kubectl apply -f deploy/manifests/load-generator.yaml
+kubectl get hpa -w
+```
+
+CPU use rises above the 50% target and the replica count increases, up to the maximum of 4.
+
+
+<img src="assets/Sprint4/Sprint4-Hpa-Scale-Up.png" alt="HPA scaling up under load" width="100%" height="100%">
+
+<b>Stop the load and watch it scale down :</b>
+
+```
+kubectl delete -f deploy/manifests/load-generator.yaml
+kubectl get hpa -w
+```
+
+After the 60-second stabilization window, the replicas return to the minimum.
+
+<img src="assets/Sprint4/Sprint4-Hpa-Scale-Down.png" alt="HPA scaling down after the load stops" width="100%" height="100%">
+
+---
+
+
+## Step 6 - Automatic Node Scaling
+
+Refer to: scripts\node_scaler.py
+
+The scaler reads the node CPU and memory percentages that the Health Checker publishes to Prometheus (kubernetes_health_monitor_node_cpu_usage_percent and kubernetes_health_monitor_node_memory_usage_percent) and decides what to do:
+
+| Condition | Decision | Action |
+|---|---|---|
+| Average utilization at or above 85% and fewer than 3 nodes | Scale up | `minikube node add`, then load the monitor image onto the new node |
+| Average utilization at or below 30% and more than 2 nodes | Scale down | Drain the newest worker node, then `minikube node delete` it |
+| Anything else | No change | Nothing |
+
+The control plane node is never removed. The script does nothing unless it is run with `--apply` (a dry run is the default), and with `--loop` it keeps checking on its own. It uses only the Python standard library, so there is nothing to install.
+
+```python
+PROM_URL = os.getenv("PROM_URL", "http://localhost:9090")
+SCALE_UP = float(os.getenv("SCALE_UP", "85"))      # % utilization
+SCALE_DOWN = float(os.getenv("SCALE_DOWN", "30"))  # % utilization
+MIN_NODES = int(os.getenv("MIN_NODES", "2"))
+MAX_NODES = int(os.getenv("MAX_NODES", "3"))
+INTERVAL = int(os.getenv("INTERVAL", "60"))        # seconds between checks
+COOLDOWN = int(os.getenv("COOLDOWN", "300"))       # seconds after an action
+```
+
+The decision logic:
+
+```python
+nodes = sorted(s["metric"]["node"] for s in cpu_series)
+cpu = sum(float(s["value"][1]) for s in cpu_series) / len(cpu_series)
+mem = sum(float(s["value"][1]) for s in mem_series) / len(mem_series)
+load = max(cpu, mem)
+
+if load >= SCALE_UP and len(nodes) < MAX_NODES:
+    print("DECISION: SCALE UP")
+    run(["minikube", "node", "add"])
+    # a new node does not have the monitor image yet
+    run(["minikube", "image", "load", "health-monitor:latest"])
+elif load <= SCALE_DOWN and len(nodes) > MIN_NODES:
+    print("DECISION: SCALE DOWN")
+    victim = [n for n in nodes if n != "minikube"][-1]  # never the control plane
+    run(["kubectl", "drain", victim, "--ignore-daemonsets",
+         "--delete-emptydir-data", "--timeout=120s"])
+    run(["minikube", "node", "delete", victim])
+else:
+    print("DECISION: NO CHANGE")
+```
+
+On a real cloud cluster, the two `minikube` commands would be replaced by the cloud provider's node-group API. The decision logic stays the same.
+
+The `requirements.txt` file records that no packages are needed:
+
+```
+# node_scaler.py uses only the Python standard library (Python 3.8+), no packages to install.
+```
+
+<b>Open Prometheus so the scaler can read it (second terminal) :</b>
+
+```
+kubectl port-forward svc/prometheus 19090:9090
+```
+
+<b>Dry run (nothing is changed) :</b>
+
+```
+$env:PROM_URL="http://localhost:19090"
+python scripts/node_scaler.py
+```
+
+The script prints the node utilization and `DECISION: NO CHANGE`, because a lightly loaded cluster is between the two thresholds.
+
+
+<img src="assets/Sprint4/Sprint4-Scaler-No-Change.png" alt="Node scaler dry run" width="100%" height="100%">
+
+<b>Scale up.</b> A lightly loaded test cluster never reaches 85%, so the threshold is lowered for the test only:
+
+```
+$env:SCALE_UP="5"
+python scripts/node_scaler.py --apply
+kubectl get nodes
+```
+
+The script prints `DECISION: SCALE UP`, adds the worker node `minikube-m03` and loads the monitor image onto it. The cluster now has 3 nodes.
+
+<img src="assets/Sprint4/Sprint4-Scale-Up-Three-Nodes.png" alt="Scale up to three nodes" width="100%" height="100%">
+
+<b>Redistribute the pods onto the new node :</b>
+
+```
+kubectl rollout restart deployment/resource-balanced-demo
+kubectl get pods -o wide -l app=resource-balanced-demo
+```
+
+The topology spread constraint places the new pods evenly, one on each of the three nodes.
+
+<img src="assets/Sprint4/Sprint4-Balanced-Pods-Three-Nodes.png" alt="Pods balanced across three nodes" width="100%" height="100%">
+
+<b>Node metrics in Prometheus.</b> Open http://localhost:19090 and run these queries in the Graph tab. Each shows one line per node, now including the new node:
+
+```
+kubernetes_health_monitor_node_cpu_usage_percent
+kubernetes_health_monitor_node_memory_usage_percent
+```
+
+<img src="assets/Sprint4/Sprint4-Prometheus-Node-Metrics.png" alt="Node CPU and memory metrics in Prometheus" width="100%" height="100%">
+
+<b>Scale down.</b> This time the scale-down threshold is raised for the test only:
+
+```
+Remove-Item Env:SCALE_UP
+$env:SCALE_DOWN="90"
+python scripts/node_scaler.py --apply
+kubectl get nodes
+```
+
+The script prints `DECISION: SCALE DOWN`, drains `minikube-m03` (its pods move to the other nodes) and deletes it. The cluster is back to 2 nodes.
+
+
+<img src="assets/Sprint4/Sprint4-Scale-Down-Two-Nodes.png" alt="Scale down to two nodes" width="100%" height="100%">
+
+
+## Step 7 - Cost Optimization Evidence
+
+Several design choices in this sprint keep the cluster small and cheap:
+
+| Measure | Effect |
+|---|---|
+| Node scaling down at 30% utilization or below | Idle nodes are removed instead of running for nothing |
+| A minimum of 2 nodes and a maximum of 3 | Keeps cost and capacity within known limits |
+| HPA with a 60-second scale-down window | Extra pods are released quickly after a load spike |
+| CPU and memory requests and limits on every workload | Pods are right-sized and the scheduler packs them efficiently |
+| Even spreading across nodes | No node is overloaded while another sits idle |
+
+Reset the test thresholds and capture the cluster's resource usage:
+
+```
+Remove-Item Env:SCALE_DOWN
+Remove-Item Env:PROM_URL
+kubectl top nodes
+kubectl top pods
+```
+
+<img src="assets/Sprint4/Sprint4-Cost-Resource-Usage.png" alt="Cluster resource usage" width="100%" height="100%">
+
+<b>Clean up :</b>
+
+```
+kubectl delete -f deploy/manifests/hpa-demo.yaml
+kubectl delete -f deploy/manifests/hpa-test-deployment.yaml
+kubectl delete -f deploy/manifests/resource-balanced-deployment.yaml
+```
+
+---
+
+
+## Notes
+
+- The test thresholds (5% to force a scale up and 90% to force a scale down) were temporary overrides, because a lightly loaded test cluster never reaches the real ones. The defaults are 85% and 30%, which match the 85% recommendation threshold already used by the Health Checker.
+- A node added later does not have the locally built monitor image, which is why the scaler loads it right after adding a node.
+- Metrics-server needs a few minutes to become ready after it is enabled. The HPA and the node CPU and memory metrics only work once `kubectl top nodes` shows values.
+- On a real cloud cluster, the node scaling step maps to the provider's autoscaler or node group API.
+
+---
+
+
+## Sprint 4 - Summary of Changes
+
+| File | Change |
+|---|---|
+| scripts/node_scaler.py | New. Reads node utilization from Prometheus and adds or removes a worker node, with dry-run and loop modes |
+| deploy/manifests/resource-balanced-deployment.yaml | Added a topology spread constraint to balance pods across nodes |
+| deploy/manifests/hpa-demo.yaml | Added a 60-second scale-down stabilization window |
+| deploy/manifests/hpa-test-deployment.yaml | Added a Service so the load generator can reach the workload |
+| deploy/manifests/load-generator.yaml | New. Simulated load for the HPA test |
+| requirements.txt | Documents that the scaler needs no packages |
+
+<b>Result :</b> The system now scales and balances itself. Pods are scaled by the HPA under load, nodes are added and removed automatically from the utilization metrics, and pods are spread evenly across nodes. All of it was verified under simulated load on a multi-node staging cluster, and the sizing choices keep the cluster cost low.
+
+---
+
 <b></b>
 <b></b>
 <b></b>
