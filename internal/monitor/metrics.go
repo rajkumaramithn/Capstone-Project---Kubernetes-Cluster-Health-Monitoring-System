@@ -46,6 +46,13 @@ var (
 		},
 		[]string{"namespace", "pod", "container"},
 	)
+	unhealthyPods = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_unhealthy_pods",
+			Help: "Number of observed pods considered unhealthy.",
+		},
+	)
+
 	podsWithExcessiveRestarts = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_pods_with_excessive_restarts",
@@ -53,18 +60,20 @@ var (
 		},
 		[]string{"namespace", "pod"},
 	)
-	unhealthyPods = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "kubernetes_health_monitor_unhealthy_pods",
-			Help: "Number of observed pods considered unhealthy.",
-		},
-	)
+
 	nodeCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kubernetes_health_monitor_nodes",
 			Help: "Number of observed nodes by readiness status.",
 		},
 		[]string{"node", "status"},
+	)
+	healingActions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kubernetes_health_monitor_healing_actions_total",
+			Help: "Self-healing actions taken, by namespace and reason.",
+		},
+		[]string{"namespace", "reason"},
 	)
 	nodePressure = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -85,11 +94,11 @@ func init() {
 		nodeCPUUsage,
 		nodeMemoryUsage,
 		nodeScalingRecommendation,
+		healingActions,
 		podsWithExcessiveRestarts,
 	)
 }
 
-// UpdateMetrics refreshes metrics using the latest pod information.
 // UpdateMetrics refreshes metrics using the latest pod information.
 func UpdateMetrics(pods []v1.Pod) {
 	podCount.Reset()
@@ -108,7 +117,6 @@ func UpdateMetrics(pods []v1.Pod) {
 
 		isUnhealthy := pod.Status.Phase == v1.PodFailed ||
 			pod.Status.Phase == v1.PodUnknown
-
 		hasExcessiveRestarts := false
 
 		for _, container := range pod.Status.ContainerStatuses {
@@ -127,14 +135,14 @@ func UpdateMetrics(pods []v1.Pod) {
 			}
 		}
 
+		if isUnhealthy {
+			unhealthy++
+		}
+
 		if hasExcessiveRestarts {
 			podsWithExcessiveRestarts.
 				WithLabelValues(pod.Namespace, pod.Name).
 				Set(1)
-		}
-
-		if isUnhealthy {
-			unhealthy++
 		}
 	}
 
@@ -254,4 +262,9 @@ func UpdateNodeResourceMetrics(nodes []v1.Node, metrics []metricsv1beta1.NodeMet
 // MetricsHandler returns the HTTP handler used by Prometheus to scrape metrics.
 func MetricsHandler() http.Handler {
 	return promhttp.Handler()
+}
+
+// RecordHealingAction counts a self-healing action.
+func RecordHealingAction(namespace, reason string) {
+	healingActions.WithLabelValues(namespace, reason).Inc()
 }
