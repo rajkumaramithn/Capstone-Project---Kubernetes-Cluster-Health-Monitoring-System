@@ -32,7 +32,7 @@ Manually monitoring and troubleshooting Kubernetes clusters is time-consuming an
 
 ## Architecture
 
-<img src="assets/tech_architecture.png" alt="Project Architectural Image" width="100%" height="100%">
+<img src="assets/folder_structure_final.png" alt="Project Architectural Image" width="100%" height="100%">
 
 
 ## Kubernetes Cluster (Nodes & Pods)
@@ -66,7 +66,7 @@ The notification endpoint that delivers alerts routed through Alertmanager. It c
 
 Project File Structure Definition 
 
-<img src="assets/folder_structure.png" alt="Project Folder Architecture Image" width="100%" height="100%">
+<img src="assets/folder_structure_final.png" alt="Project Folder Architecture Image" width="100%" height="100%">
 
 ## Step 1 - Initializing the Go Project
 
@@ -2384,7 +2384,23 @@ Health-monitor, Prometheus, Alertmanager and Grafana are all `1/1`.
 <b>Result :</b> The project is complete. A Grafana dashboard shows the cluster's health, resource use, self-healing actions, alerts and history, and it is created automatically from files, so it can be rebuilt with one command and survives restarts. The documentation explains how to install, use and troubleshoot the system, and the final tests confirmed that monitoring, self-healing, scaling, alerting and the dashboard work together.
 
 ---
-<b></b>
-<b></b>
-<b></b>
-<b></b>
+
+## Final Conclusion
+
+This project replaced constant manual cluster monitoring with an automated system. Over six sprints it grew from a simple pod checker into a complete solution that monitors nodes and pods, heals failed and crash-looping pods, scales workloads and nodes, sends alerts to Slack and shows everything on a live Grafana dashboard.
+
+<b>Key Outcomes</b>
+
+- <b>Monitoring:</b> a Go Health Checker publishes pod, node and resource metrics to Prometheus.
+- <b>Self-healing and scaling:</b> unhealthy pods are replaced automatically, and pods and nodes scale with the load.
+- <b>Alerting:</b> nine alert rules reach Slack by severity, with resolved messages.
+- <b>Visibility:</b> a 15-panel dashboard, created from files, shows health, healing, alerts and history.
+- <b>Cost and safety:</b> every component has resource limits, and the healer only deletes pods that a controller will recreate.
+
+<b>Limitations and Future Scope</b>
+
+The healer covers only the default namespace, Slack is the only notification channel, and monitoring data is not stored persistently. Persistent storage, Microsoft Teams, all-namespace healing and a Helm chart are the next steps.
+
+The system shows that routine cluster operations can be automated end to end using standard DevOps tools, in a setup small enough to run on a laptop.
+
+---
