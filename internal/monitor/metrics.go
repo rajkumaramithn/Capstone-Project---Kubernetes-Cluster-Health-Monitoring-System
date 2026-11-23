@@ -1,0 +1,270 @@
+package monitor
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	v1 "k8s.io/api/core/v1"
+	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
+)
+
+var (
+	nodeCPUUsage = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_cpu_usage_percent",
+			Help: "Node CPU utilization percentage.",
+		},
+		[]string{"node"},
+	)
+	nodeMemoryUsage = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_memory_usage_percent",
+			Help: "Node memory utilization percentage.",
+		},
+		[]string{"node"},
+	)
+	nodeScalingRecommendation = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_scaling_recommendation",
+			Help: "Node scaling recommendation: 1 means scaling recommended, 0 means not recommended.",
+		},
+		[]string{"node", "resource"},
+	)
+	podCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_pods",
+			Help: "Number of observed pods by namespace and phase.",
+		},
+		[]string{"namespace", "phase"},
+	)
+	containerRestarts = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_container_restarts",
+			Help: "Container restart counts reported by Kubernetes.",
+		},
+		[]string{"namespace", "pod", "container"},
+	)
+	unhealthyPods = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_unhealthy_pods",
+			Help: "Number of observed pods considered unhealthy.",
+		},
+	)
+
+	podsWithExcessiveRestarts = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_pods_with_excessive_restarts",
+			Help: "Pods with containers exceeding the restart threshold.",
+		},
+		[]string{"namespace", "pod"},
+	)
+
+	nodeCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_nodes",
+			Help: "Number of observed nodes by readiness status.",
+		},
+		[]string{"node", "status"},
+	)
+	healingActions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kubernetes_health_monitor_healing_actions_total",
+			Help: "Self-healing actions taken, by namespace and reason.",
+		},
+		[]string{"namespace", "reason"},
+	)
+	nodePressure = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "kubernetes_health_monitor_node_pressure",
+			Help: "Node resource pressure conditions: 1 means pressure is active, 0 means inactive.",
+		},
+		[]string{"node", "condition"},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(
+		podCount,
+		containerRestarts,
+		unhealthyPods,
+		nodeCount,
+		nodePressure,
+		nodeCPUUsage,
+		nodeMemoryUsage,
+		nodeScalingRecommendation,
+		healingActions,
+		podsWithExcessiveRestarts,
+	)
+}
+
+// UpdateMetrics refreshes metrics using the latest pod information.
+func UpdateMetrics(pods []v1.Pod) {
+	podCount.Reset()
+	containerRestarts.Reset()
+	podsWithExcessiveRestarts.Reset()
+
+	unhealthy := 0
+
+	for _, pod := range pods {
+		phase := string(pod.Status.Phase)
+		if phase == "" {
+			phase = "Unknown"
+		}
+
+		podCount.WithLabelValues(pod.Namespace, phase).Inc()
+
+		isUnhealthy := pod.Status.Phase == v1.PodFailed ||
+			pod.Status.Phase == v1.PodUnknown
+		hasExcessiveRestarts := false
+
+		for _, container := range pod.Status.ContainerStatuses {
+			containerRestarts.WithLabelValues(
+				pod.Namespace,
+				pod.Name,
+				container.Name,
+			).Set(float64(container.RestartCount))
+
+			if container.RestartCount > 3 {
+				hasExcessiveRestarts = true
+			}
+
+			if container.State.Waiting != nil {
+				isUnhealthy = true
+			}
+		}
+
+		if isUnhealthy {
+			unhealthy++
+		}
+
+		if hasExcessiveRestarts {
+			podsWithExcessiveRestarts.
+				WithLabelValues(pod.Namespace, pod.Name).
+				Set(1)
+		}
+	}
+
+	unhealthyPods.Set(float64(unhealthy))
+}
+
+// UpdateNodeMetrics refreshes metrics using the latest node information.
+func UpdateNodeMetrics(nodes []v1.Node) {
+	nodeCount.Reset()
+	nodePressure.Reset()
+
+	for _, node := range nodes {
+		status := "Unknown"
+
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == v1.NodeReady {
+				if condition.Status == v1.ConditionTrue {
+					status = "Ready"
+				} else {
+					status = "NotReady"
+				}
+				break
+			}
+		}
+
+		nodeCount.WithLabelValues(node.Name, status).Set(1)
+
+		for _, conditionType := range []v1.NodeConditionType{
+			v1.NodeMemoryPressure,
+			v1.NodeDiskPressure,
+			v1.NodePIDPressure,
+		} {
+			value := float64(0)
+
+			for _, condition := range node.Status.Conditions {
+				if condition.Type == conditionType &&
+					condition.Status == v1.ConditionTrue {
+					value = 1
+					break
+				}
+			}
+
+			nodePressure.WithLabelValues(node.Name, string(conditionType)).Set(value)
+		}
+	}
+}
+
+// UpdateNodeResourceMetrics calculates node CPU and memory utilization.
+func UpdateNodeResourceMetrics(nodes []v1.Node, metrics []metricsv1beta1.NodeMetrics) {
+	nodeCPUUsage.Reset()
+	nodeMemoryUsage.Reset()
+	nodeScalingRecommendation.Reset()
+
+	const warningThreshold = 70.0
+	const scalingThreshold = 85.0
+
+	for _, node := range nodes {
+		var cpuPercent, memoryPercent float64
+
+		for _, nodeMetric := range metrics {
+			if nodeMetric.Name != node.Name {
+				continue
+			}
+
+			cpuCapacity := node.Status.Capacity.Cpu().MilliValue()
+			memoryCapacity := node.Status.Capacity.Memory().Value()
+
+			if cpuCapacity > 0 {
+				cpuPercent = float64(nodeMetric.Usage.Cpu().MilliValue()) /
+					float64(cpuCapacity) * 100
+			}
+
+			if memoryCapacity > 0 {
+				memoryPercent = float64(nodeMetric.Usage.Memory().Value()) /
+					float64(memoryCapacity) * 100
+			}
+			break
+		}
+
+		nodeCPUUsage.WithLabelValues(node.Name).Set(cpuPercent)
+		nodeMemoryUsage.WithLabelValues(node.Name).Set(memoryPercent)
+
+		for resourceName, utilization := range map[string]float64{
+			"cpu":    cpuPercent,
+			"memory": memoryPercent,
+		} {
+			recommendation := float64(0)
+
+			if utilization >= scalingThreshold {
+				recommendation = 1
+			}
+
+			nodeScalingRecommendation.WithLabelValues(
+				node.Name,
+				resourceName,
+			).Set(recommendation)
+
+			if utilization >= scalingThreshold {
+				fmt.Printf(
+					"SCALE RECOMMENDATION: Node %s %s utilization is %.2f%%\n",
+					node.Name,
+					resourceName,
+					utilization,
+				)
+			} else if utilization >= warningThreshold {
+				fmt.Printf(
+					"WARNING: Node %s %s utilization is %.2f%%\n",
+					node.Name,
+					resourceName,
+					utilization,
+				)
+			}
+		}
+	}
+}
+
+// MetricsHandler returns the HTTP handler used by Prometheus to scrape metrics.
+func MetricsHandler() http.Handler {
+	return promhttp.Handler()
+}
+
+// RecordHealingAction counts a self-healing action.
+func RecordHealingAction(namespace, reason string) {
+	healingActions.WithLabelValues(namespace, reason).Inc()
+}

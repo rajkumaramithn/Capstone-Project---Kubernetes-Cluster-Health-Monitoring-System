@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: default
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: slack-warning
+      group_by: ["alertname", "severity"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 4h
+      routes:
+        - matchers: ['severity="critical"']
+          receiver: slack-critical
+          group_wait: 0s
+          repeat_interval: 1h
+        - matchers: ['severity="warning"']
+          receiver: slack-warning
+          repeat_interval: 4h
+        - matchers: ['severity="info"']
+          receiver: slack-info
+          repeat_interval: 12h
+
+    inhibit_rules:
+      - source_matchers: ['alertname="KubernetesNodeNotReady"']
+        target_matchers: ['severity="warning"']
+
+    receivers:
+      - name: slack-critical
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack_api_url
+            channel: "#kubernetes-alerts"
+            send_resolved: true
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+            title: '[CRITICAL] {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+            text: |-
+              {{ range .Alerts }}*Summary:* {{ .Annotations.summary }}
+              *Details:* {{ .Annotations.description }}
+              {{ end }}
+      - name: slack-warning
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack_api_url
+            channel: "#kubernetes-alerts"
+            send_resolved: true
+            color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+            title: '[WARNING] {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+            text: |-
+              {{ range .Alerts }}*Summary:* {{ .Annotations.summary }}
+              *Details:* {{ .Annotations.description }}
+              {{ end }}
+      - name: slack-info
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack_api_url
+            channel: "#kubernetes-alerts"
+            send_resolved: true
+            color: good
+            title: '[INFO] {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}'
+            text: |-
+              {{ range .Alerts }}*Summary:* {{ .Annotations.summary }}
+              *Details:* {{ .Annotations.description }}
+              {{ end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.28.1
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+          ports:
+            - name: web
+              containerPort: 9093
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager/alertmanager.yml
+              subPath: alertmanager.yml
+              readOnly: true
+            - name: slack-secret
+              mountPath: /etc/alertmanager/secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9093
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        - name: slack-secret
+          secret:
+            secretName: alertmanager-slack
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: default
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - name: web
+      port: 9093
+      targetPort: web
+  type: ClusterIP
