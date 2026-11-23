@@ -32,7 +32,7 @@ Manually monitoring and troubleshooting Kubernetes clusters is time-consuming an
 
 ## Architecture
 
-<img src="assets/folder_structure_final.png" alt="Project Architectural Image" width="100%" height="100%">
+<img src="assets/tech_architecture_final.png" alt="Project Architectural Image" width="100%" height="100%">
 
 
 ## Kubernetes Cluster (Nodes & Pods)
