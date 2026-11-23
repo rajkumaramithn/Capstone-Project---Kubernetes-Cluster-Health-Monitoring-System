@@ -1893,6 +1893,497 @@ Notes:
 <b>Result :</b> The team is notified in real time. Prometheus detects problems, Alertmanager routes them by severity (critical, warning and info) and Slack delivers firing and resolved messages. The alerts cover pod and node health, resource pressure, restarts, self-healing activity and scaling recommendations. All three severity levels were tested end to end.
 
 ---
+
+## Sprint 6 - Web Dashboard and Project Documentation
+
+Sprint 6 completes the project. It adds a Grafana dashboard that shows the cluster's health, the self-healing actions, the alerts and the history in one place, and it delivers the user documentation: how to set the system up, how to use it, and how to fix the problems that came up during development. The sprint ends with the final testing of the whole system and a list of improvements for the future.
+
+<b>Cluster used :</b> Minikube (single node for the full stack; the multi-node scaling tests were done in Sprint 4)
+
+<b>Sprint 6 Overview</b>
+
+📁 deploy/prometheus
+</br><i>Grafana now provisions its Prometheus data source and a 15-panel dashboard automatically</i>
+
+📁 README
+</br><i>Setup guide, usage guide, troubleshooting guide, final test results, feedback and future improvements</i>
+
+---
+
+
+## Step 1 - Why the Dashboard Is Provisioned from Files
+
+A dashboard built by hand in the Grafana web interface is stored inside the Grafana pod. When the pod restarts, the dashboard is gone, and nobody else can reproduce it. In this project the dashboard is defined in the repository instead, and Grafana loads it at start-up, so a single `kubectl apply` gives the same dashboard every time.
+
+Refer to: deploy\prometheus\grafana-deployment.yaml
+
+The file contains five Kubernetes objects:
+
+| Object | Purpose |
+|---|---|
+| ConfigMap grafana-datasources | Adds Prometheus (http://prometheus:9090) as the default data source |
+| ConfigMap grafana-dashboard-provider | Tells Grafana to load dashboards from a folder and puts them in "Kubernetes Health Monitor" |
+| ConfigMap grafana-dashboards | The dashboard itself, as JSON |
+| Deployment grafana | Runs Grafana with the three ConfigMaps mounted as files |
+| Service grafana | Exposes Grafana inside the cluster on port 3000 |
+
+The data source definition:
+
+```yaml
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+```
+
+The dashboard provider:
+
+```yaml
+apiVersion: 1
+providers:
+  - name: kubernetes-health-monitor
+    orgId: 1
+    folder: Kubernetes Health Monitor
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+```
+
+The Deployment mounts the three ConfigMaps and makes the new dashboard the home page after login:
+
+```yaml
+env:
+  - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+    value: /var/lib/grafana/dashboards/kubernetes-health.json
+volumeMounts:
+  - name: datasources
+    mountPath: /etc/grafana/provisioning/datasources
+  - name: dashboard-provider
+    mountPath: /etc/grafana/provisioning/dashboards
+  - name: dashboards
+    mountPath: /var/lib/grafana/dashboards
+```
+
+Grafana's start-up is heavy, because it sets up its database and loads its internal components. During testing it stayed in a `0/1` (not ready) state and made the API server time out when it was given a small memory limit on a small node. The container therefore gets a realistic allowance, and a readiness probe that waits for it to finish starting:
+
+```yaml
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 12
+```
+
+---
+
+
+## Step 2 - The Dashboard Panels
+
+The dashboard, Kubernetes Cluster Health Monitoring, refreshes every 10 seconds and shows the last 30 minutes by default. Every panel uses metrics that the Health Checker has published since earlier sprints, and the alert panels use Prometheus's built-in ALERTS metric.
+
+| Group | Panel | Query | What it tells you |
+|---|---|---|---|
+| Current health | Unhealthy Pods | `kubernetes_health_monitor_unhealthy_pods` | Pods that are failed, unknown or stuck waiting. Red when above 0 |
+| Current health | Nodes Ready | `sum(kubernetes_health_monitor_nodes{status="Ready"}) or vector(0)` | Number of healthy nodes |
+| Current health | Nodes Not Ready | `sum(kubernetes_health_monitor_nodes{status!="Ready"}) or vector(0)` | Nodes with a problem. Red when above 0 |
+| Current health | Node Resource Pressure | `max by (node) (kubernetes_health_monitor_node_pressure)` | OK or Pressure per node |
+| Resources | Node CPU Usage (%) | `kubernetes_health_monitor_node_cpu_usage_percent` | CPU use per node, with lines at 70% and 85% |
+| Resources | Node Memory Usage (%) | `kubernetes_health_monitor_node_memory_usage_percent` | Memory use per node, with lines at 70% and 85% |
+| Resources | Node Scaling Recommendation | `kubernetes_health_monitor_node_scaling_recommendation` | OK or Scale up per node and resource |
+| Pods | Pods by Phase | `sum by (phase) (kubernetes_health_monitor_pods)` | Running, Pending, Failed pods over time |
+| Pods | Unhealthy Pods Over Time | `kubernetes_health_monitor_unhealthy_pods` | History of unhealthy pods |
+| Pods | Containers with Restarts | `kubernetes_health_monitor_container_restarts > 0` | Table of containers that have restarted |
+| Self-healing | Auto-Healing Actions (1h) | `sum(increase(kubernetes_health_monitor_healing_actions_total[1h])) or vector(0)` | How many pods the healer removed in the last hour |
+| Self-healing | Self-Healing Actions by Reason (5m) | `sum by (reason) (increase(kubernetes_health_monitor_healing_actions_total[5m]))` | Healing activity split into CrashLoopBackOff, Failed and Evicted |
+| Alerts | Firing Alerts | `count(ALERTS{alertstate="firing"}) or vector(0)` | Number of active alerts. Red when above 0 |
+| Alerts | Firing Alerts (Alert Log) | `ALERTS{alertstate="firing"}` | Table with the name and severity of each active alert |
+| Alerts | Alert History | `count by (alertname) (ALERTS{alertstate="firing"})` | When each alert fired and resolved |
+
+The `or vector(0)` part makes a panel show 0 instead of "No data" when nothing matches.
+
+A note on the self-healing panels: a counter only appears after its first increase, and `increase()` needs two data points. The very first healing action may therefore not show, but repeated healing does.
+
+To change the dashboard permanently, edit the JSON inside grafana-deployment.yaml, run `kubectl apply -f deploy/prometheus/grafana-deployment.yaml` and then `kubectl rollout restart deployment/grafana`. Edits made in the Grafana web interface are not saved across restarts.
+
+---
+
+
+## Step 3 - Building and Testing the Code
+
+No Go code changed in this sprint. The build and tests confirm that the whole project is intact.
+
+<b>On the Command Line Terminal Run :</b>
+
+```
+go mod tidy
+go build ./...
+go test ./...
+```
+
+<img src="assets/Sprint6/Sprint6-Go-Test-Pass.png" alt="Go tests passing" width="100%" height="100%">
+
+---
+
+
+## Step 4 - Deploying the Complete System
+
+Grafana is deployed last. Its large image download and start-up are heavy, and starting everything at once overloaded a small cluster during testing.
+
+```
+docker build -t health-monitor:latest .
+minikube image load health-monitor:latest
+kubectl apply -f deploy/manifests/rbac.yaml
+kubectl apply -f deploy/manifests/health-monitor.yaml
+kubectl apply -f deploy/prometheus/prometheus-deployment.yaml
+kubectl create secret generic alertmanager-slack --from-literal=slack_api_url='<YOUR_SLACK_WEBHOOK_URL>'
+kubectl apply -f deploy/alertmanager/alertmanager-deployment.yaml
+kubectl get pods
+```
+
+When these pods are `1/1 Running`, deploy Grafana:
+
+```
+kubectl apply -f deploy/prometheus/grafana-deployment.yaml
+kubectl get pods
+```
+
+All four pods (health-monitor, prometheus, alertmanager and grafana) reach the Running state.
+
+
+<img src="assets/Sprint6/Sprint6-Pods-Running.png" alt="All pods running" width="100%" height="100%">
+
+---
+
+
+## Step 5 - Opening the Dashboard
+
+```
+kubectl port-forward svc/grafana 3000:3000
+```
+
+Open http://localhost:3000 and log in with the admin credentials defined in grafana-deployment.yaml. The dashboard opens as the home page.
+
+Under Connections > Data sources, Prometheus is already listed. It was added automatically, without any manual setup, and Save & test confirms it can query Prometheus.
+
+<img src="assets/Sprint6/Sprint6-Grafana-Data-Source-Provisioned.png" alt="Provisioned Prometheus data source" width="100%" height="100%">
+
+On a healthy cluster, the dashboard shows Unhealthy Pods 0, Nodes Ready 1, Nodes Not Ready 0 and Firing Alerts 0, with lines in the CPU and memory graphs.
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Healthy.png" alt="Dashboard on a healthy cluster" width="100%" height="100%">
+
+---
+
+
+## Step 6 - Seeing Failures and Self-Healing on the Dashboard
+
+Create two problems: a pod that crashes in a loop (so the healer removes it again and again) and a pod whose image does not exist.
+
+```
+kubectl apply -f deploy/manifests/crashloop-test.yaml
+kubectl create deployment bad-pod --image=nginx:doesnotexist
+```
+
+After a few minutes the dashboard reacts:
+
+- Unhealthy Pods rises above 0, and the Unhealthy Pods Over Time graph follows it.
+- Auto-Healing Actions and Self-Healing Actions by Reason show the healer removing the crash-looping pod.
+- Containers with Restarts lists the crashing container.
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Self-Healing-1.png" alt="Dashboard showing self-healing activity" width="100%" height="100%">
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Self-Healing-2.png" alt="Dashboard showing self-healing activity" width="100%" height="100%">
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Self-Healing-3.png" alt="Dashboard showing self-healing activity" width="100%" height="100%">
+
+
+The alert panels show the active alerts in the table and in Alert History. The same alerts arrive in Slack through the pipeline built in Sprint 5.
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Alerts.png" alt="Dashboard showing firing alerts" width="100%" height="100%">
+
+---
+
+
+## Step 7 - Historical Data
+
+Setting the time range in the top right to Last 1 hour shows the earlier activity: the graphs keep the history of the failures, the healing actions and the alerts. Prometheus keeps the data for 2 days.
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Alerts.png" alt="Dashboard historical view" width="100%" height="100%">
+
+---
+
+
+## Step 8 - The Dashboard Survives a Restart
+
+Restarting Grafana would have deleted a hand-made dashboard. Because this one is provisioned from files, it comes back by itself:
+
+```
+kubectl rollout restart deployment/grafana
+kubectl get pods
+```
+
+When the new Grafana pod is `1/1 Running`, restart the port-forward and refresh the page. The same dashboard is there.
+
+<img src="assets/Sprint6/Sprint6-Dashboard-After-Restart-1.png" alt="Dashboard after restarting Grafana" width="100%" height="100%">
+
+<img src="assets/Sprint6/Sprint6-Dashboard-After-Restart-2.png" alt="Dashboard after restarting Grafana" width="100%" height="100%">
+
+---
+
+
+## Step 9 - Recovery
+
+Remove the test workloads:
+
+```
+kubectl delete -f deploy/manifests/crashloop-test.yaml
+kubectl delete deployment bad-pod
+```
+
+After a few minutes, Unhealthy Pods and Firing Alerts return to 0, and Slack shows the RESOLVED messages.
+
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Resolved-1.png" alt="Dashboard after recovery" width="100%" height="100%">
+
+<img src="assets/Sprint6/Sprint6-Dashboard-Resolved-2.png" alt="Dashboard after recovery" width="100%" height="100%">
+
+---
+
+
+## User Guide - Setup
+
+### What you need
+
+| Requirement | Notes |
+|---|---|
+| Docker Desktop | Running (the Docker engine must be started) |
+| Minikube | Version 1.38 or newer, using the Docker driver |
+| kubectl | Any recent version |
+| Go | Only needed to run the tests (go.mod states the required version) |
+| Python 3.8 or newer | Only needed for the node scaler script |
+| A Slack workspace | For notifications. You create an incoming webhook (below) |
+| Machine resources | About 4 CPUs and 4 GB of memory for Minikube. Grafana's start-up is heavy, and a 2 CPU, 2.2 GB cluster was too small for the full stack |
+
+### Create the Slack webhook
+
+1. Go to https://api.slack.com/apps and create an app named Kubernetes Health Monitor.
+2. Turn on Incoming Webhooks and add a webhook to the #kubernetes-alerts channel.
+3. Copy the webhook URL. Treat it like a password. Never put it in a file or in Git.
+
+### Install the system
+
+```
+minikube start --driver=docker --cpus 4 --memory 4096
+minikube addons enable metrics-server
+```
+
+Wait about 3 minutes. Run `kubectl top nodes` until it prints CPU and memory values. The Metrics API takes a few minutes to become ready, and the next steps need it.
+
+```
+docker build -t health-monitor:latest .
+minikube image load health-monitor:latest
+kubectl apply -f deploy/manifests/rbac.yaml
+kubectl apply -f deploy/manifests/health-monitor.yaml
+kubectl apply -f deploy/prometheus/prometheus-deployment.yaml
+kubectl create secret generic alertmanager-slack --from-literal=slack_api_url='<YOUR_SLACK_WEBHOOK_URL>'
+kubectl apply -f deploy/alertmanager/alertmanager-deployment.yaml
+kubectl apply -f deploy/prometheus/grafana-deployment.yaml
+kubectl get pods
+```
+
+All pods should show `1/1 Running`. The first Grafana start can take a few minutes because its image is large.
+
+### Check that it works
+
+| Check | Command | Expected |
+|---|---|---|
+| Monitor is running | `kubectl logs deploy/health-monitor --tail=5` | Start-up lines and no errors |
+| Metrics are published | `kubectl port-forward svc/health-monitor 8080:8080`, then open /metrics | Lines starting with kubernetes_health_monitor |
+| Prometheus sees the monitor | `kubectl port-forward svc/prometheus 9090:9090`, then Status > Targets | Both jobs UP |
+| The dashboard loads | `kubectl port-forward svc/grafana 3000:3000` | Dashboard with data |
+
+### Remove everything
+
+```
+minikube delete
+```
+
+
+## User Guide - Usage
+
+### Opening the web interfaces
+
+Run each command in its own terminal and leave it open:
+
+| Interface | Command | Address |
+|---|---|---|
+| Grafana dashboard | `kubectl port-forward svc/grafana 3000:3000` | http://localhost:3000 |
+| Prometheus | `kubectl port-forward svc/prometheus 9090:9090` | http://localhost:9090 |
+| Alertmanager | `kubectl port-forward svc/alertmanager 9093:9093` | http://localhost:9093 |
+| Raw metrics | `kubectl port-forward svc/health-monitor 8080:8080` | http://localhost:8080/metrics |
+
+On Windows, a port can be blocked by the system. If a command fails with "forbidden by its access permissions", use a different local port, for example `19090:9090`.
+
+### Reading the dashboard
+
+- The top row answers one question: is the cluster healthy right now? Green means yes. Red means a problem.
+- The CPU and memory graphs show how busy each node is. The lines at 70% and 85% mark where warnings and scaling recommendations begin.
+- The self-healing panels show what the system fixed on its own.
+- The alert panels show what is firing now and what fired earlier.
+- Use the time range in the top right to look back.
+
+### What the system does on its own
+
+| Situation | Reaction |
+|---|---|
+| A pod fails or is evicted | The healer removes it and its Deployment or Job creates a replacement |
+| A container is in CrashLoopBackOff with 3 or more restarts | Same as above |
+| A standalone pod fails | Nothing is deleted, because nothing would recreate it. An alert is raised |
+| An alert fires | Slack receives a message with the severity colour, and another when it resolves |
+| Pods use too much CPU | The Horizontal Pod Autoscaler adds replicas (Sprint 4) |
+| Nodes are busy or idle | The node scaler script adds or removes a worker node (Sprint 4) |
+
+### Trying it out
+
+| Test | Command | What to watch |
+|---|---|---|
+| Crash-looping pod | `kubectl apply -f deploy/manifests/crashloop-test.yaml` | The pod is replaced, HEAL lines appear in the monitor log, and the dashboard shows the healing |
+| Failed job pod | `kubectl apply -f deploy/manifests/failed-job-test.yaml` | The failed pod is removed |
+| Unhealthy pod | `kubectl create deployment bad-pod --image=nginx:doesnotexist` | A warning alert in Slack and on the dashboard |
+| Monitor down (critical alert) | `kubectl scale deployment health-monitor --replicas=0` | A red CRITICAL message in Slack. Restore it with `--replicas=1` |
+
+To see the healing log:
+
+```
+kubectl logs deploy/health-monitor | Select-String "HEAL action" -CaseSensitive
+```
+
+(The `-CaseSensitive` option stops PowerShell from also matching the word Health.)
+
+### Changing the system
+
+| Change | Where |
+|---|---|
+| Alert thresholds and rules | The alerts.yml section of deploy/prometheus/prometheus-deployment.yaml. Apply it, then `kubectl rollout restart deployment/prometheus` |
+| Alert routing, colours and repeat times | The ConfigMap in deploy/alertmanager/alertmanager-deployment.yaml. Apply it, then `kubectl rollout restart deployment/alertmanager` |
+| Dashboard panels | The JSON in deploy/prometheus/grafana-deployment.yaml. Apply it, then `kubectl rollout restart deployment/grafana` |
+| Replace the Slack webhook | `kubectl delete secret alertmanager-slack`, create it again, then `kubectl rollout restart deployment/alertmanager` |
+| Node scaling thresholds | The environment variables of scripts/node_scaler.py (SCALE_UP, SCALE_DOWN, MIN_NODES, MAX_NODES) |
+
+### Stopping and starting
+
+Stop the cluster without losing anything: `minikube stop`. Start it again with `minikube start --driver=docker`. Do this before shutting the computer down or letting it sleep.
+
+
+## User Guide - Troubleshooting
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `minikube start` says the driver is not healthy | Docker Desktop is not running | Start Docker Desktop, wait for Engine running, and try again |
+| `kubectl` says connection refused on 127.0.0.1 | The cluster is stopped | Run `minikube start --driver=docker` |
+| `kubectl top nodes` says Metrics API not available | metrics-server is still starting | Wait 2 to 3 minutes. Check `kubectl get pods -n kube-system`. Restart it with `kubectl rollout restart deployment/metrics-server -n kube-system` |
+| `kubectl` commands time out right after enabling metrics-server or deploying | The API server is busy | Wait a few minutes before retrying. Do not send many commands at once. Deploy Grafana last. Use a bigger cluster if it keeps happening |
+| Port-forward fails with "forbidden by its access permissions" | Windows blocked that local port | Use another local port, for example `19090:9090` |
+| Every pod shows `CreateContainerError`, or ages show `<invalid>` | The computer slept, lost power or its clock drifted, leaving the container runtime in a bad state | Run `minikube delete`, `wsl --shutdown`, restart Docker Desktop, and create the cluster again. Run `minikube stop` before leaving, and avoid sleep |
+| The health-monitor pod shows ErrImagePull or ImagePullBackOff | The image was not loaded into Minikube | Run `minikube image load health-monitor:latest`, then `kubectl rollout restart deployment/health-monitor` |
+| A pod stays in ContainerCreating | A large image is still downloading (Grafana is about 1.4 GB) | Wait, and look at the Events in `kubectl describe pod <name>` |
+| Grafana stays Running but 0/1 | Grafana is starved of memory or CPU, or the cluster is too small | Keep the 1Gi memory limit, deploy Grafana last, and use at least 4 CPUs and 4 GB for Minikube |
+| A dashboard panel says No data | Prometheus has no data yet, or its target is down | Wait 2 to 3 minutes. Check Status > Targets in Prometheus. Both jobs must be UP |
+| The Prometheus target is DOWN | The health-monitor pod is not running | Check `kubectl get pods` and `kubectl logs deploy/health-monitor` |
+| No Slack messages arrive | The webhook Secret is missing or wrong, or the alert has not waited long enough | Check `kubectl get secret alertmanager-slack`. Test the webhook with a direct request. Read `kubectl logs deploy/alertmanager`. Remember each alert waits 1 to 2 minutes before firing |
+| The Alertmanager pod does not start | The Secret did not exist yet | Create the Secret first, then run `kubectl rollout restart deployment/alertmanager` |
+| The healer does not remove failing pods | The monitor runs an old image, or RBAC lacks the delete permission | Rebuild and reload the image. Check `kubectl auth can-i delete pods --as=system:serviceaccount:default:health-monitor-sa` |
+| The node scaler says no node metrics found | Prometheus is not reachable | Keep `kubectl port-forward svc/prometheus 19090:9090` running and set `$env:PROM_URL="http://localhost:19090"` |
+| The monitor log shows many old ContainerCreating alerts | These are old log lines from when the pods were starting | Use `--tail` or restart the monitor. They do not mean the problem is still there |
+
+---
+
+
+## Final Testing
+
+The whole system was tested at the end of the project. The tests from the earlier sprints were verified in those sprints, and Sprint 6 adds the dashboard and end-to-end checks.
+
+| Area | Test | Result |
+|---|---|---|
+| Code | `go build ./...` and `go test ./...` | Passed (Sprint 6, Step 3) |
+| Monitoring | Pod and node metrics published and scraped by Prometheus | Both targets UP (Sprints 2 and 6) |
+| Self-healing | A crash-looping pod is removed and replaced, with a timestamped audit log | Passed (Sprint 3) |
+| Self-healing | A failed job pod is removed, and a standalone pod is left alone | Passed (Sprint 3) |
+| Pod scaling | The HPA scales up under load and back down | Passed (Sprint 4) |
+| Node scaling | The scaler adds a node, pods are redistributed, and the node is removed again | Passed (Sprint 4) |
+| Alerting | Warning, critical and info alerts reach Slack, with RESOLVED messages | Passed (Sprint 5) |
+| Dashboard | Panels show health, resources, healing, alerts and history | Passed (Sprint 6, Steps 5 to 7) |
+| Dashboard | The dashboard is still there after Grafana restarts | Passed (Sprint 6, Step 8) |
+| Recovery | The dashboard and alerts return to normal after the test workloads are removed | Passed (Sprint 6, Step 9) |
+
+<b>Final validation :</b>
+
+```
+kubectl get deploy
+kubectl get pods
+```
+
+Health-monitor, Prometheus, Alertmanager and Grafana are all `1/1`.
+
+<img src="assets/Sprint6/Sprint6-Final-Validation.png" alt="Final validation of all components" width="100%" height="100%">
+
+<img src="assets/Sprint6/Sprint6-Prometheus-Targets-Up.png" alt="Prometheus targets UP" width="100%" height="100%">
+
+---
+
+
+## Cost Optimization Summary
+
+| Measure | Sprint | Effect |
+|---|---|---|
+| CPU and memory requests and limits on every component | 2 to 6 | Components use only what they need, and the scheduler packs them efficiently |
+| Prometheus keeps 2 days of data | 2 | Small storage footprint |
+| Idle nodes are removed (utilization 30% or lower) | 4 | No paying for unused capacity |
+| A minimum of 2 and a maximum of 3 nodes | 4 | Cost stays within known limits |
+| HPA with a 60-second scale-down window | 4 | Extra pods are released quickly |
+| Even pod spreading across nodes | 4 | No node is overloaded while another is idle |
+| One small Alertmanager and one monitor pod | 2 and 5 | The monitoring stack itself is lightweight |
+
+---
+
+
+## Project Deliverables Checklist
+
+| Deliverable from the project brief | Where it is |
+|---|---|
+| Automated health monitoring tool for Kubernetes clusters | Sprints 1 and 2 |
+| Self-healing for pods and nodes | Pod recovery in Sprint 3, node scaling and balancing in Sprint 4 |
+| Real-time alerting and notifications | Alertmanager and Slack in Sprint 5 |
+| Web dashboard for real-time and historical monitoring | Grafana dashboard in Sprint 6 |
+| Documentation for setup, usage and troubleshooting | This README, including the User Guide sections above |
+
+---
+
+
+## Sprint 6 - Summary of Changes
+
+| File | Change |
+|---|---|
+| deploy/prometheus/grafana-deployment.yaml | Rebuilt to provision the Prometheus data source and the 15-panel dashboard from ConfigMaps, with realistic resource limits and a readiness probe |
+| README.md | New Sprint 6 section: the dashboard, the User Guide (setup, usage, troubleshooting), final testing, cost summary, feedback, future improvements and the deliverables checklist |
+
+<b>Result :</b> The project is complete. A Grafana dashboard shows the cluster's health, resource use, self-healing actions, alerts and history, and it is created automatically from files, so it can be rebuilt with one command and survives restarts. The documentation explains how to install, use and troubleshoot the system, and the final tests confirmed that monitoring, self-healing, scaling, alerting and the dashboard work together.
+
+---
 <b></b>
 <b></b>
 <b></b>
