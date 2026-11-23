@@ -9,7 +9,6 @@ import (
 )
 
 // CheckPods checks pod and container health and reports unhealthy states.
-// CheckPods checks pod and container health and reports unhealthy states.
 func CheckPods(pods []v1.Pod) {
 	for _, pod := range pods {
 		switch pod.Status.Phase {
